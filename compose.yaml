@@ -1,0 +1,58 @@
+x-app: &app
+  build:
+    context: .
+    target: app
+  env_file: .env
+  environment:
+    DATABASE_URL: sqlite:////data/ebay.db
+    STATE_DIR: /data
+  volumes:
+    - signal-data:/data
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  web:
+    <<: *app
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5)"]
+      interval: 20s
+      timeout: 6s
+      retries: 3
+  bot:
+    <<: *app
+    command: ["python", "-m", "app.bot"]
+    depends_on:
+      web:
+        condition: service_healthy
+  worker:
+    <<: *app
+    build:
+      context: .
+      target: browser
+    environment:
+      DATABASE_URL: sqlite:////data/ebay.db
+      STATE_DIR: /data
+      EBAY_HTTP_CLIENT: ${EBAY_HTTP_CLIENT:-playwright}
+      EBAY_BROWSER_PROFILE_DIR: /browser-profile
+    volumes:
+      - signal-data:/data
+      - browser-data:/browser-profile
+    shm_size: 1gb
+    stop_grace_period: 45s
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./docker/chromium-seccomp.json
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  signal-data:
+  browser-data:
+

@@ -1,0 +1,124 @@
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+
+from app.parser.ebay import Listing, ParseError, amount, build_search_url, canonical_url, currency, matches_filters, parse_detail, parse_search, timestamp
+from app.schemas import Filters
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_current_layout_and_placeholder():
+    page = parse_search((FIXTURES / "search-card.html").read_text())
+    assert page.layout == "s-card"
+    assert page.has_next
+    assert len(page.listings) == 2
+    first, second = page.listings
+    assert first.title == "Sony Walkman WM-EX"
+    assert first.ebay_id == "123456789001"
+    assert first.url == "https://www.ebay.com/itm/123456789001"
+    assert first.price == 89.99
+    assert first.shipping == 0
+    assert "Japan" in first.location
+    assert first.image_url.startswith("https://i.ebayimg.com/")
+    assert first.buying_format == "buy_now"
+    assert second.currency == "CAD"
+    assert second.price == 1234.5
+    assert second.buying_format == "auction"
+
+
+def test_sanitized_live_card_excerpt():
+    page = parse_search((FIXTURES / "search-live-excerpt.html").read_text())
+    assert len(page.listings) == 1
+    item = page.listings[0]
+    assert item.title == "Sony Walkman Radio & Cassette Player WM- FX221 Tape Audio Music"
+    assert "Opens in a new window" not in item.title
+    assert item.price == 46.83
+    assert item.buying_format == "buy_now"
+    assert "United Kingdom" in item.location
+    assert item.image_url.startswith("https://i.ebayimg.com/")
+
+
+def test_legacy_layout():
+    page = parse_search((FIXTURES / "search-legacy.html").read_text())
+    assert page.layout == "s-item"
+    assert not page.has_next
+    item = page.listings[0]
+    assert (item.currency, item.price, item.shipping) == ("EUR", 150.5, 10)
+
+
+def test_detail_preserves_arbitrary_attributes():
+    listing = Listing("123456789001", "https://www.ebay.com/itm/123456789001", "old")
+    item = parse_detail((FIXTURES / "detail.html").read_text(), listing)
+    assert item.attributes == {"Brand":"Sony", "Model":"WM-EX", "Color":"Silver", "Custom Attribute":"Any future value"}
+    assert item.published_at == timestamp("2026-10-21T10:00:00Z")
+    assert item.seller == "retro_shop"
+    assert item.raw["json_ld"]
+
+
+@pytest.mark.parametrize("html", ["<title>Pardon Our Interruption</title>", "<title>Error Page | eBay</title>", "<html>Unexpected new layout</html>"])
+def test_blocked_and_unknown_are_not_empty(html):
+    with pytest.raises(ParseError):
+        parse_search(html)
+
+
+def test_real_zero_is_valid():
+    assert parse_search('<h1 class="srp-controls__count-heading">0 results for unicorn</h1>').listings == []
+
+
+@pytest.mark.parametrize("value, expected", [("$1,234.56",1234.56),("EUR 1.234,56",1234.56),("€ 150,50",150.5),("1 200.00",1200),("Call for price",None)])
+def test_money(value, expected):
+    assert amount(value) == expected
+
+
+@pytest.mark.parametrize("value, expected", [("DKK 100","DKK"),("AU $100","AUD"),("US $100","USD"),("C $100","CAD"),("£100","GBP"),("100","")])
+def test_currency(value, expected):
+    assert currency(value) == expected
+
+
+def test_no_invented_listing_date():
+    item = Listing("123456789001", "https://www.ebay.com/itm/123456789001", "Sony")
+    parse_detail('<h1 id="itemTitle">Sony</h1><script type="application/ld+json">{"@type":"Product","dateModified":"2026-10-21T10:00:00Z","offers":{"validFrom":"2026-10-21T10:00:00Z"}}</script>', item)
+    assert item.published_at is None
+    assert timestamp("2026-10-21") is None
+    assert timestamp("2026-10-21T10:00:00") is None
+
+
+def test_embedded_start_time_must_belong_to_item():
+    item = Listing("123456789001", "https://www.ebay.com/itm/123456789001", "Sony")
+    parse_detail('<h1 id="itemTitle">Sony</h1><script type="application/json">{"itemId":"999999999999","startTime":"2026-10-21T10:00:00Z"}</script>', item)
+    assert item.published_at is None
+
+
+def test_filters_include_shipping_and_dynamic_attributes():
+    item = Listing("1", "", "Sony Walkman", price=90, currency="USD", shipping=15, condition="Pre-Owned",
+                   location="Tokyo, Japan", attributes={"Brand":"Sony"})
+    filters = Filters(max_price=100, include_shipping=True, location="Japan", attributes={"Brand":"sony"}).model_dump()
+    assert matches_filters(item, filters) is False
+    item.shipping = 5
+    assert matches_filters(item, filters) is True
+    item.attributes = {}
+    assert matches_filters(item, filters) is None
+    item.currency = "EUR"
+    assert matches_filters(item, filters) is False
+
+
+def test_query_is_encoded_and_ssrf_rejected():
+    url = build_search_url("sony & lego", {"min_price":5,"max_price":100,"condition":"used","currency":"EUR"})
+    query = parse_qs(urlparse(url).query)
+    assert query["_nkw"] == ["sony & lego"]
+    assert query["_sop"] == ["10"]
+    assert query["LH_ItemCondition"] == ["3000"]
+    assert canonical_url("https://evil.test/itm/123456789001") is None
+    assert canonical_url("javascript:alert(1)") is None
+
+
+def test_used_is_not_new():
+    item = Listing("1","","camera",currency="USD",condition="Used, like new")
+    assert matches_filters(item, Filters(condition="new").model_dump()) is False
+
+
+def test_unknown_shipping_is_not_free():
+    item = Listing("1","","camera",currency="USD")
+    assert matches_filters(item, Filters(free_shipping=True).model_dump()) is None

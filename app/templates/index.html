@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f7f3">
+  <meta name="description" content="Особистий радар товарів eBay із повідомленнями в Telegram.">
+  <title>Signal — ваш радар eBay</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Signal, головна"><span class="brand-icon">s<span>↗</span></span>signal<span class="brand-dot">.</span></a>
+      <div class="workspace-label">ОСОБИСТИЙ ПРОСТІР</div>
+      <button class="nav-item selected" id="all-watches"><span class="nav-icon">◉</span> Мій радар <span id="watch-count" class="count">0</span></button>
+      <div class="sidebar-heading"><span>МОЇ ПОШУКИ</span><button id="sidebar-add" class="icon-button" title="Додати пошук" aria-label="Додати пошук">+</button></div>
+      <div id="watch-list" class="watch-list"><p class="sidebar-empty">Ваші пошуки з’являться тут</p></div>
+      <div class="sidebar-bottom">
+        <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection-text">Потрібен вхід</span></div>
+        <div class="user-block"><span class="avatar" id="avatar">↗</span><div><strong id="user-name">Ваш простір</strong><small>eBay → Telegram</small></div><button id="logout" class="icon-button" title="Вийти" aria-label="Вийти" hidden>↪</button></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar"><div class="breadcrumbs">Мій простір <span>/</span> <strong>Радар товарів</strong></div><span class="market-label"><i></i> ebay.com</span></header>
+      <section class="page-heading"><div><div class="eyebrow"><span class="tiny-cross">✳</span> ЗНАХІДКИ ПОЧИНАЮТЬСЯ ТУТ</div><h1 id="page-title">Мій радар<span>.</span></h1><p id="page-description">Ви обираєте, що шукати. Ми тримаємо руку на пульсі eBay.</p></div><button id="new-watch" class="button primary"><span>＋</span> Новий пошук</button></section>
+
+      <section class="stats" aria-label="Статистика моніторингу">
+        <div class="stat"><div class="stat-label">Активні пошуки <span>◎</span></div><strong id="stat-active">0</strong><small>Працюють у фоні</small></div>
+        <div class="stat"><div class="stat-label">Знайдені товари <span>▤</span></div><strong id="stat-total">0</strong><small>Відповідають вашим фільтрам</small></div>
+        <div class="stat accent"><div class="stat-label">Нові оголошення <span>↗</span></div><strong id="stat-new">0</strong><small>Після початку моніторингу</small></div>
+      </section>
+
+      <section class="signal-note"><span class="note-symbol">↗</span><p><strong>Тільки свіжі знахідки у Telegram.</strong> Наявні товари залишаються тут. Про нові повідомимо, коли підтвердимо дату публікації.</p><span class="note-tag">БЕЗ ЗАЙВОГО ШУМУ</span></section>
+      <div id="service-warning" class="alert warning" hidden></div>
+      <label class="mobile-watch" for="mobile-watch-select">Оберіть пошук<select id="mobile-watch-select"><option value="">Усі мої пошуки</option></select></label>
+      <section id="selected-watch" class="selected-watch" hidden></section>
+
+      <section class="results-section">
+        <div class="results-heading"><div class="tabs" role="tablist" aria-label="Товари"><button id="tab-all" class="tab active" role="tab" aria-selected="true">Усі знахідки <span id="items-count">0</span></button><button id="tab-new" class="tab" role="tab" aria-selected="false">Нові <span class="new-indicator"></span></button></div><span id="sync-text" class="sync-text">Автооновлення · 15 с</span></div>
+        <div id="results" aria-live="polite"></div>
+        <div id="pagination" class="pagination" hidden><button id="prev-page" class="button subtle">← Назад</button><span id="page-info"></span><button id="next-page" class="button subtle">Далі →</button></div>
+      </section>
+      <footer><span><strong>signal.</strong> Маленький радар. Великі знахідки.</span><span>Створено для уважних покупців <span class="footer-star">✳</span></span></footer>
+    </main>
+  </div>
+
+  <dialog id="login-dialog" class="login-dialog">
+    <div class="login-art" aria-hidden="true"><div class="art-label">EBAY → ВАШ TELEGRAM</div><div class="radar-circle r1"></div><div class="radar-circle r2"></div><div class="radar-circle r3"></div><div class="radar-line"></div><span class="radar-center">s↗</span><span class="radar-point p1"></span><span class="radar-point p2"></span><div class="art-caption">Ваша наступна<br>знахідка вже близько<span>↗</span></div></div>
+    <div class="login-content"><a class="brand small" href="/">signal<span class="brand-dot">.</span></a><div class="eyebrow">ВАШ ОСОБИСТИЙ РАДАР</div><h2>Хороші речі<br>не чекають.</h2><p class="muted">Слідкуйте за товарами на eBay та отримуйте нові знахідки прямо в Telegram.</p>
+      <form id="login-start-form"><label for="username">Ваш Telegram username</label><div class="input-prefix"><span>@</span><input id="username" name="username" autocomplete="username" placeholder="your_username" required minlength="4" maxlength="33"></div><button class="button primary full" type="submit">Продовжити з Telegram <span>↗</span></button></form>
+      <div id="login-code-step" hidden><ol class="login-steps"><li><a id="bot-link" class="button telegram full" target="_blank" rel="noopener noreferrer">Відкрити бота й натиснути Start ↗</a></li><li>Введіть код, який надіслав бот</li></ol><form id="login-verify-form"><label for="login-code">Код підтвердження</label><input id="login-code" class="code-input" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required><button class="button primary full" type="submit">Увійти до свого простору →</button></form><button id="login-back" class="text-button">Змінити username / отримати новий код</button></div>
+      <div id="login-error" class="alert error" role="alert" hidden></div><p class="login-fine">Без паролів. Код діє 10 хвилин.<br>Бот пише лише після того, як ви натиснете Start.</p>
+    </div>
+  </dialog>
+
+  <dialog id="watch-dialog" class="watch-dialog">
+    <form id="watch-form"><div class="dialog-heading"><div><div class="eyebrow">НАЛАШТУЙТЕ СВІЙ СИГНАЛ</div><h2 id="watch-dialog-title">Новий пошук</h2></div><button type="button" class="icon-button close-dialog" data-close="watch-dialog" aria-label="Закрити">×</button></div>
+      <div class="form-grid"><div class="field"><label for="watch-name">Назва пошуку</label><input id="watch-name" name="name" placeholder="Мій наступний Walkman" maxlength="100" required></div><div class="field"><label for="watch-query">Що шукаємо на eBay?</label><input id="watch-query" name="query" placeholder="Sony Walkman WM-EX" maxlength="200" required></div></div>
+      <div class="form-section-label">ЦІНА ТА ФОРМАТ</div>
+      <div class="form-grid three"><div class="field"><label for="min-price">Ціна від</label><input id="min-price" name="min_price" type="number" min="0" step="0.01" placeholder="0"></div><div class="field"><label for="max-price">Ціна до</label><input id="max-price" name="max_price" type="number" min="0" step="0.01" placeholder="Без обмежень"></div><div class="field"><label for="currency">Валюта</label><select id="currency" name="currency"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>AUD</option></select></div></div>
+      <div class="form-grid"><div class="field"><label for="condition">Стан</label><select id="condition" name="condition"><option value="any">Будь-який</option><option value="new">Новий</option><option value="used">Вживаний</option><option value="refurbished">Відновлений</option><option value="parts">На запчастини</option></select></div><div class="field"><label for="buying-format">Формат покупки</label><select id="buying-format" name="buying_format"><option value="any">Усі оголошення</option><option value="buy_now">Купити зараз</option><option value="auction">Аукціон</option></select></div></div>
+      <div class="checkbox-row"><label><input type="checkbox" name="free_shipping"> Безкоштовна доставка</label><label><input type="checkbox" name="include_shipping"> Враховувати доставку в ціні</label></div>
+      <div class="form-section-label">ТОЧНІШЕ НАЛАШТУВАННЯ</div>
+      <div class="form-grid"><div class="field"><label for="location">Локація товару</label><input id="location" name="location" placeholder="Наприклад, Japan або United States" maxlength="100"><small>Частина назви локації англійською</small></div><div class="field"><label for="seller">Продавець</label><input id="seller" name="seller" placeholder="Будь-який продавець" maxlength="100"></div><div class="field"><label for="exclude-keywords">Виключити слова</label><input id="exclude-keywords" name="exclude_keywords" placeholder="case, broken, manual"><small>Слова або фрази через кому</small></div><div class="field"><label for="interval">Перевіряти кожні</label><select id="interval" name="interval_seconds"><option value="60">1 хвилину</option><option value="180">3 хвилини</option><option value="300" selected>5 хвилин</option><option value="600">10 хвилин</option><option value="1800">30 хвилин</option><option value="3600">1 годину</option></select></div></div>
+      <details class="advanced"><summary>Характеристики товару та категорія <span>＋</span></summary><p class="muted">Назви характеристик як на eBay: Brand, Model, Color, Storage Capacity… Значення перевіряємо за входженням тексту без урахування регістру.</p><div id="attribute-rows"></div><button id="add-attribute" type="button" class="text-button">＋ Додати характеристику</button><div class="field category-field"><label for="category-id">ID категорії eBay</label><input id="category-id" name="category_id" inputmode="numeric" pattern="[0-9]*" placeholder="Наприклад, 15054" maxlength="12"></div></details>
+      <div class="form-note">↗ Перший знімок збережемо на сайті без повідомлень. Після зміни критеріїв створимо новий знімок.</div><div id="watch-error" class="alert error" role="alert" hidden></div><div class="dialog-actions"><button type="button" class="button subtle" data-close="watch-dialog">Скасувати</button><button type="submit" class="button primary">Зберегти пошук ↗</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="item-dialog" class="item-dialog"><div id="item-detail"></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
