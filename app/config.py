@@ -20,15 +20,15 @@ class Settings(BaseSettings):
     secret_key: str = ""
     access_minutes: int = 10
     refresh_days: int = 30
-    request_delay_seconds: float = Field(default=5, ge=0)
-    max_search_pages: int = Field(default=3, ge=1, le=10)
-    details_per_scan: int = Field(default=12, ge=1, le=100)
+    request_delay_seconds: float = Field(default=10, ge=0)
+    request_delay_jitter_seconds: float = Field(default=10, ge=0)
     ebay_proxy: str = ""
     ebay_http_client: Literal["playwright", "curl_cffi", "httpx"] = "playwright"
     ebay_browser: str = Field(default="chrome", min_length=1, max_length=64)
     ebay_block_cooldown_seconds: int = Field(default=900, ge=60, le=86400)
     ebay_browser_profile_dir: Path | None = None
     ebay_browser_headless: bool = False
+    ebay_firefox_fallback: bool = True
     ebay_browser_timeout_seconds: int = Field(default=45, ge=5, le=180)
 
     def signing_key(self) -> str:

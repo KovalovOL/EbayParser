@@ -1,0 +1,57 @@
+# Production override: docker compose -f compose.yaml -f compose.traefik.yaml ...
+# Requires Docker Compose >= 2.24.4. No ports are published on the VPS.
+x-production-env: &production-env
+  PUBLIC_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in the server .env}
+  COOKIE_SECURE: "true"
+
+services:
+  web:
+    image: mira-tarel0chn1tsa-app:${RELEASE_ID:-local}
+    ports: !reset []
+    environment:
+      <<: *production-env
+      FORWARDED_ALLOW_IPS: "*"
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik-public
+      traefik.http.routers.mira.rule: Host(`${APP_DOMAIN:?Set APP_DOMAIN in the server .env}`)
+      traefik.http.routers.mira.entrypoints: websecure
+      traefik.http.routers.mira.tls: "true"
+      traefik.http.routers.mira.tls.certresolver: myresolver
+      traefik.http.routers.mira.service: mira
+      traefik.http.services.mira.loadbalancer.server.port: "8000"
+      traefik.http.routers.mira-http.rule: Host(`${APP_DOMAIN:?Set APP_DOMAIN in the server .env}`)
+      traefik.http.routers.mira-http.entrypoints: web
+      traefik.http.routers.mira-http.middlewares: mira-https
+      traefik.http.routers.mira-http.service: mira
+      traefik.http.middlewares.mira-https.redirectscheme.scheme: https
+      traefik.http.middlewares.mira-https.redirectscheme.permanent: "true"
+    networks:
+      - default
+      - traefik-public
+  bot:
+    image: mira-tarel0chn1tsa-app:${RELEASE_ID:-local}
+    environment: *production-env
+    labels:
+      traefik.enable: "false"
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "bot"]
+      interval: 20s
+      timeout: 6s
+      start_period: 40s
+      retries: 3
+  worker:
+    image: mira-tarel0chn1tsa-worker:${RELEASE_ID:-local}
+    environment: *production-env
+    labels:
+      traefik.enable: "false"
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "worker"]
+      interval: 20s
+      timeout: 6s
+      start_period: 40s
+      retries: 3
+
+networks:
+  traefik-public:
+    external: true

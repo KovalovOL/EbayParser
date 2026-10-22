@@ -37,7 +37,11 @@ SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 def init_db():
     from app import models  # noqa: F401
-    Base.metadata.create_all(engine)
+    from app.migrations import initialize_schema
+    with engine.begin() as connection:
+        # web, bot and worker may start together; serialize schema changes and backfill.
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        initialize_schema(connection, Base.metadata)
 
 
 def get_db():

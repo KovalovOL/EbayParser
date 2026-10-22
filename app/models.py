@@ -74,10 +74,26 @@ class WatchItem(Base):
     detail_error: Mapped[str | None] = mapped_column(Text)
 
 
+class SeenListing(Base):
+    __tablename__ = "seen_listings"
+    __table_args__ = (UniqueConstraint("user_id", "fingerprint"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(Text)
+    price: Mapped[str] = mapped_column(String(128))
+    currency: Mapped[str] = mapped_column(String(8))
+    location: Mapped[str] = mapped_column(Text)
+    first_seen_at: Mapped[float] = mapped_column(default=stamp)
+
+
 class Notification(Base):
     __tablename__ = "notifications"
     id: Mapped[int] = mapped_column(primary_key=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("watch_items.id", ondelete="CASCADE"), unique=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("watch_items.id", ondelete="CASCADE"), index=True)
+    seen_listing_id: Mapped[int | None] = mapped_column(
+        ForeignKey("seen_listings.id", ondelete="CASCADE"), unique=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
     attempts: Mapped[int] = mapped_column(default=0)
     next_attempt_at: Mapped[float] = mapped_column(default=stamp, index=True)
     sent_at: Mapped[float | None]
@@ -90,4 +106,13 @@ class ServiceState(Base):
     heartbeat_at: Mapped[float] = mapped_column(Float, default=stamp)
     value: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class MonitorState(Base):
+    __tablename__ = "monitor_state"
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    retry_at: Mapped[float] = mapped_column(default=0)
+    checking_watch_id: Mapped[int | None] = mapped_column(ForeignKey("watches.id", ondelete="SET NULL"))
+    error: Mapped[str | None] = mapped_column(Text)
+    browser: Mapped[str | None] = mapped_column(String(16))
 

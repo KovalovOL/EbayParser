@@ -36,21 +36,21 @@ def new_tokens(db: Session, user: User, family: str | None = None) -> tuple[str,
 def rotate_refresh(db: Session, token: str) -> tuple[str, str]:
     current = db.get(RefreshSession, digest(token))
     if not current or current.revoked or current.expires_at < time.time():
-        raise HTTPException(401, "Сесія закінчилася. Увійдіть через Telegram.")
+        raise HTTPException(401, "Your session has expired. Sign in with Telegram.")
     if current.used:
         db.execute(update(RefreshSession).where(RefreshSession.family == current.family).values(revoked=True))
         db.commit()
-        raise HTTPException(401, "Повторне використання refresh token. Увійдіть ще раз.")
+        raise HTTPException(401, "This session is no longer valid. Sign in again.")
     # Conditional claim also prevents two concurrent refreshes from both rotating the same token.
     claimed = db.execute(update(RefreshSession).where(
         RefreshSession.token_hash == current.token_hash, RefreshSession.used.is_(False),
         RefreshSession.revoked.is_(False)).values(used=True))
     if claimed.rowcount != 1:
         db.rollback()
-        raise HTTPException(401, "Сесію вже оновлено. Повторіть вхід.")
+        raise HTTPException(401, "This session has already been refreshed. Sign in again.")
     user = db.get(User, current.user_id)
     if not user:
-        raise HTTPException(401, "Користувача не знайдено")
+        raise HTTPException(401, "User not found")
     tokens = new_tokens(db, user, current.family)
     db.commit()
     return tokens
@@ -58,7 +58,7 @@ def rotate_refresh(db: Session, token: str) -> tuple[str, str]:
 
 def current_user(auth: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)) -> User:
     if not auth:
-        raise HTTPException(401, "Увійдіть через Telegram")
+        raise HTTPException(401, "Sign in with Telegram")
     try:
         claims = jwt.decode(auth.credentials, get_settings().signing_key(), algorithms=["HS256"],
                             issuer="ebay-signal", audience="ebay-signal-web",
@@ -67,9 +67,9 @@ def current_user(auth: HTTPAuthorizationCredentials | None = Depends(bearer), db
             raise ValueError()
         user_id = int(claims["sub"])
     except (jwt.PyJWTError, ValueError, KeyError):
-        raise HTTPException(401, "Access token закінчився або недійсний") from None
+        raise HTTPException(401, "The access token has expired or is invalid.") from None
     user = db.scalar(select(User).where(User.id == user_id))
     if not user:
-        raise HTTPException(401, "Користувача не знайдено")
+        raise HTTPException(401, "User not found")
     return user
 

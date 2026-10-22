@@ -1,4 +1,4 @@
-"""One eBay search page, optionally one detail page; no database or Telegram writes."""
+"""One eBay search results page; no item requests, database writes or Telegram messages."""
 import argparse
 import asyncio
 import json
@@ -10,7 +10,7 @@ from app.parser.ebay import EbayClient, ParseError
 
 
 async def diagnose(args) -> int:
-    settings = get_settings().model_copy(update={"max_search_pages": args.pages})
+    settings = get_settings().model_copy()
     if args.client:
         settings.ebay_http_client = args.client
     query, filters = args.query, {"currency": "USD"}
@@ -20,7 +20,7 @@ async def diagnose(args) -> int:
         with SessionLocal() as db:
             watch = db.get(Watch, args.watch_id)
             if not watch:
-                print(json.dumps({"result": "error", "message": "Пошук не знайдено"}, ensure_ascii=False))
+                print(json.dumps({"result": "error", "message": "Search not found"}, ensure_ascii=False))
                 return 1
             query, filters = watch.query, dict(watch.filters)
     temporary_profile = None
@@ -36,14 +36,11 @@ async def diagnose(args) -> int:
         items, truncated, _ = await ebay.search(query, filters)
         print(json.dumps({"phase": "search", "result": "ok", "client": settings.ebay_http_client,
                           "proxy_configured": bool(settings.ebay_proxy), "listings": len(items),
-                          "more_pages": truncated}), flush=True)
-        if args.detail and items:
-            item = await ebay.detail(items[0])
-            print(json.dumps({"phase": "detail", "result": "ok", "attributes": len(item.attributes),
-                              "publication_date_available": item.published_at is not None}), flush=True)
+                          "more_pages": truncated, "browser": ebay.last_browser}), flush=True)
         return 0
     except ParseError as exc:
-        print(json.dumps({"result": "error", "client": settings.ebay_http_client, "message": str(exc)},
+        print(json.dumps({"result": "error", "client": settings.ebay_http_client,
+                          "browser": ebay.last_browser, "message": str(exc)},
                          ensure_ascii=False), flush=True)
         return 1
     finally:
@@ -56,10 +53,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query", default="sony walkman")
     parser.add_argument("--client", choices=("playwright", "curl_cffi", "httpx"))
-    parser.add_argument("--detail", action="store_true")
     parser.add_argument("--watch-id", type=int, help="Read an existing watch's criteria without changing its data")
     parser.add_argument("--profile-dir", type=Path, help="Dedicated diagnostic profile; default is temporary")
-    parser.add_argument("--pages", type=int, default=1, choices=range(1, 11))
     raise SystemExit(asyncio.run(diagnose(parser.parse_args())))
 
 

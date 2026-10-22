@@ -12,7 +12,7 @@ USER signal
 
 FROM runtime AS browser-deps
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
-RUN python -m playwright install --with-deps --no-shell chromium \
+RUN python -m playwright install --with-deps --no-shell chromium firefox \
     && mkdir -p /browser-profile \
     && chown signal:signal /browser-profile \
     && chmod 700 /browser-profile \

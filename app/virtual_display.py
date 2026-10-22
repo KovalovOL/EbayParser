@@ -20,15 +20,15 @@ class VirtualDisplay:
                     env={key: value for key, value in os.environ.items() if key in {"PATH", "HOME", "TMPDIR", "LANG"}},
                 )
             except FileNotFoundError:
-                raise ParseError("Не встановлено Xvfb. Використайте браузерний Docker-образ або EBAY_BROWSER_HEADLESS=true.") from None
+                raise ParseError("Xvfb is not installed. Use the browser Docker image or set EBAY_BROWSER_HEADLESS=true.") from None
             os.close(write_fd)
             write_fd = None
             try:
                 number = (await asyncio.wait_for(asyncio.to_thread(os.read, read_fd, 32), timeout=5)).decode().strip()
             except TimeoutError:
-                raise ParseError("Не вдалося запустити віртуальний екран Chromium") from None
+                raise ParseError("Could not start the Chromium virtual display.") from None
             if not number.isdigit():
-                raise ParseError("Віртуальний екран Chromium завершився під час запуску")
+                raise ParseError("The Chromium virtual display stopped during startup.")
             return ":" + number
         except BaseException:
             await self.close()

@@ -4,8 +4,10 @@ import html
 import logging
 import secrets
 import time
+from urllib.parse import urlsplit
 
 from app.db import init_db, session_scope
+from app.config import get_settings
 from app.models import LoginChallenge, ServiceState
 from app.runtime import configure_logging, heartbeat, process_lock
 from app.security import digest
@@ -21,25 +23,36 @@ async def handle_update(update: dict, telegram: TelegramClient):
     if chat.get("type") != "private" or sender.get("is_bot"):
         return
     command = message.get("text", "").split()
-    if not command or command[0].split("@")[0] != "/start":
-        return
-    if len(command) != 2 or not command[1].startswith("login_"):
-        await telegram.send(chat["id"], "Вітаю! Відкрийте сайт eBay Signal, вкажіть свій @username і перейдіть за посиланням входу. Тут надходитимуть нові товари з ваших пошуків.")
+    if not command or command[0].split("@")[0] != "/start" or len(command) != 2 or not command[1].startswith("login_"):
+        public_url = get_settings().public_url
+        website = (f'<a href="{html.escape(public_url, quote=True)}">Open the website</a>'
+                   if urlsplit(public_url).hostname not in {"localhost", "127.0.0.1", "::1"}
+                   else "Open the Mira Tarel0chn1tsa website")
+        await telegram.send(chat["id"],
+            '<b>Mira Tarel0chn1tsa</b>\n\n'
+            f'1. {website} and enter your Telegram @username.\n'
+            '2. Follow the sign-in link on the website and press Start here.\n'
+            '3. Enter the six-digit code on the website to finish signing in.\n\n'
+            'Your account is created automatically. Add a search on the website to receive new eBay matches here.\n'
+            'The first check saves results without alerts. Later checks alert once per new title + price + location combination.\n\n'
+            'To pause notifications, pause the search on the website. Use /help to show these instructions again.')
         return
     challenge_id = command[1][6:]
     with session_scope() as db:
         challenge = db.get(LoginChallenge, challenge_id)
-        if not challenge or challenge.used or challenge.expires_at < time.time():
-            error = "Посилання входу закінчилося. Створіть новий запит на сайті."
+        if not challenge or challenge.used or challenge.expires_at < time.time() or challenge.attempts >= 5:
+            error = "This sign-in link has expired or is no longer valid. Request a new code on the website."
         elif not sender.get("username") or sender["username"].lower() != challenge.username:
-            error = "Username не збігається з указаним на сайті. Перевірте @username та створіть новий запит."
+            error = "Your Telegram username does not match the one entered on the website. Check your @username and request a new code."
         elif challenge.code_hash:
-            error = "Код уже надіслано вище. Введіть його на сайті або створіть новий запит."
+            error = "Your code was already sent above. Enter it on the website. If it has expired, request a new code there."
         else:
             error = None
             code = f"{secrets.randbelow(1_000_000):06d}"
             # Keep the transaction open until delivery succeeds; failed delivery does not consume the challenge.
-            await telegram.send(chat["id"], f"🔐 <b>Ваш код входу в eBay Signal</b>\n\n<code>{code}</code>\n\nДіє 10 хвилин від запиту на сайті. Введіть його лише на вашому сайті eBay Signal.\n@{html.escape(sender['username'])}")
+            await telegram.send(chat["id"], f"<b>Mira Tarel0chn1tsa — sign-in code</b>\n\n<code>{code}</code>\n\n"
+                f"For @{html.escape(sender['username'])}. Return to the website and enter these six digits.\n"
+                "Expires 10 minutes after your request on the website. Do not share this code.")
             challenge.code_hash = digest(challenge.id + ":" + code)
             challenge.telegram_id = sender["id"]
             challenge.chat_id = chat["id"]
@@ -68,7 +81,7 @@ async def run():
                 log.warning("%s", exc)
                 await asyncio.sleep(10)
             except Exception:
-                heartbeat("bot", "Внутрішня помилка бота; дивіться логи")
+                heartbeat("bot", "The Telegram bot encountered an internal error. Check the bot logs.")
                 log.exception("Bot update processing failed")
                 await asyncio.sleep(10)
     finally:

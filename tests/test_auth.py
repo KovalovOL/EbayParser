@@ -75,7 +75,7 @@ async def test_bot_rejects_username_mismatch(client):
     await handle_update({"message":{"chat":{"type":"private","id":999},"from":{"id":999,"username":"attacker"},"text":"/start login_"+cid}},tg)
     with SessionLocal() as db:
         assert db.get(LoginChallenge,cid).code_hash is None
-    assert "не збігається" in tg.messages[0][1]
+    assert "does not match" in tg.messages[0][1]
 
 
 async def test_bot_generates_code_only_for_matching_private_user(client):
@@ -105,3 +105,43 @@ def test_expired_code(client):
         db.get(LoginChallenge,cid).expires_at = time.time() - 1
         db.commit()
     assert client.post("/api/auth/verify",json={"challenge_id":cid,"code":"123456"}).status_code == 400
+
+
+def test_login_delivery_status_does_not_expose_code_or_identity(client):
+    cid = challenge(client)
+    url = f"/api/auth/challenges/{cid}"
+    response = client.get(url)
+    assert response.headers["cache-control"] == "no-store"
+    status = response.json()
+    assert set(status) == {"status", "expires_in", "attempts_remaining"}
+    assert status["status"] == "waiting" and 0 < status["expires_in"] <= 600
+    delivered(cid)
+    assert client.get(url).json()["status"] == "sent"
+    for _ in range(5):
+        client.post("/api/auth/verify",json={"challenge_id":cid,"code":"000000"})
+    assert client.get(url).json()["status"] == "locked"
+    assert client.get(url).json()["attempts_remaining"] == 0
+    assert client.get("/api/auth/challenges/not-a-real-challenge").status_code == 404
+
+
+def test_login_status_tracks_used_and_expired_requests(client):
+    cid = challenge(client); delivered(cid)
+    client.post("/api/auth/verify",json={"challenge_id":cid,"code":"123456"})
+    assert client.get(f"/api/auth/challenges/{cid}").json()["status"] == "used"
+    with SessionLocal() as db:
+        row = db.get(LoginChallenge,cid)
+        row.used = False; row.expires_at = time.time() - 1
+        db.commit()
+    status = client.get(f"/api/auth/challenges/{cid}").json()
+    assert status["status"] == "expired" and status["expires_in"] == 0
+
+
+async def test_bot_help_explains_registration_and_notification_controls(client):
+    tg = FakeTelegram()
+    await handle_update({"message":{"chat":{"type":"private","id":123},
+                                 "from":{"id":123,"username":"test_user"},"text":"/help"}},tg)
+    message = tg.messages[0][1]
+    assert "Mira Tarel0chn1tsa" in message
+    assert "press Start" in message and "pause the search" in message
+    assert "created automatically" in message
+    assert "localhost" not in message

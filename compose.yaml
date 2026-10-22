@@ -1,3 +1,5 @@
+# Local stack. For the VPS add: -f compose.yaml -f compose.traefik.yaml
+# Setup and GitHub Actions secrets: docs/deployment.md
 x-app: &app
   build:
     context: .

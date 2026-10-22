@@ -11,7 +11,7 @@ class LoginStart(BaseModel):
     def normalize(cls, value):
         value = value.strip().lstrip("@").lower()
         if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{3,31}", value):
-            raise ValueError("Вкажіть коректний Telegram username без посилання")
+            raise ValueError("Enter your Telegram username, such as @your_username. Use your username, not a phone number or display name.")
         return value
 
 
@@ -37,14 +37,23 @@ class Filters(BaseModel):
     @model_validator(mode="after")
     def validate_filters(self):
         if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
-            raise ValueError("Ціна від не може перевищувати ціну до")
+            raise ValueError("Minimum price cannot be higher than maximum price.")
         if any(not k.strip() or not v.strip() or len(k) > 100 or len(v) > 300
                for k, v in self.attributes.items()):
-            raise ValueError("Вкажіть назву та значення кожного атрибута (до 100 / 300 символів)")
+            raise ValueError("Each attribute needs a name (up to 100 characters) and a value (up to 300 characters).")
+        if any(k.strip().startswith("_") or k.strip().casefold().startswith("lh_")
+               or k.strip().casefold() == "rt" for k in self.attributes):
+            raise ValueError("Use eBay item-specific names such as Brand or Model, not search parameters.")
+        self.attributes = {k.strip(): v.strip() for k, v in self.attributes.items()}
+        if len({k.casefold() for k in self.attributes}) != len(self.attributes):
+            raise ValueError("Use each item-specific filter name only once.")
+        if self.attributes and not self.category_id:
+            raise ValueError("Choose an eBay category ID before adding item-specific filters.")
         if any(not v.strip() or len(v) > 100 for v in self.exclude_keywords):
-            raise ValueError("Виключення мають містити від 1 до 100 символів")
+            raise ValueError("Each excluded word or phrase must contain 1 to 100 characters.")
         self.location = self.location.strip()
         self.seller = self.seller.strip()
+        self.exclude_keywords = [value.strip() for value in self.exclude_keywords]
         return self
 
 
@@ -58,7 +67,7 @@ class WatchInput(BaseModel):
     @classmethod
     def trim(cls, value):
         if not value.strip():
-            raise ValueError("Поле не може бути порожнім")
+            raise ValueError("This field cannot be blank.")
         return value.strip()
 
 

@@ -6,7 +6,7 @@ from app.security import new_tokens
 
 
 def create(client,auth):
-    r=client.post("/api/watches",headers=auth,json={"name":"Walkman","query":"sony walkman","filters":{"max_price":100,"attributes":{"Brand":"Sony"}}})
+    r=client.post("/api/watches",headers=auth,json={"name":"Walkman","query":"sony walkman","filters":{"max_price":100,"category_id":"15054","attributes":{"Brand":"Sony"}}})
     assert r.status_code == 201
     return r.json()["id"]
 
@@ -52,13 +52,42 @@ def test_validation_and_pagination(client,auth):
     assert client.post("/api/watches",headers=auth,json={"name":"x","query":"x","interval_seconds":1}).status_code == 422
     assert client.get("/api/items?limit=10000",headers=auth).status_code == 422
     assert client.get("/api/items?offset=-1",headers=auth).status_code == 422
+    assert client.post("/api/watches",headers=auth,json={"name":"x","query":"x","filters":{"attributes":{"Brand":"Sony"}}}).status_code == 422
+
+
+def test_item_page_fetching_endpoint_is_not_available(client,auth):
+    assert client.post("/api/items/1/details",headers=auth).status_code == 404
+    status = client.get("/api/status",headers=auth).json()
+    assert status["search_pages_per_check"] == 1 and not status["automatic_item_details"]
+    assert status["newness_basis"] == "title_price_location_per_user"
 
 
 def test_page_and_static_assets(client):
     r=client.get("/")
     assert r.status_code == 200
-    assert "signal" in r.text
+    assert "Mira Tarel0chn1tsa" in r.text and '<html lang="en">' in r.text
     assert "script-src 'self'" in r.headers["content-security-policy"]
     assert client.get("/static/app.js").status_code == 200
     assert client.get("/static/style.css").status_code == 200
     assert client.get("/api/health").json() == {"status":"ok"}
+
+
+def test_old_system_errors_display_in_english_without_changing_user_content(client,auth):
+    wid = create(client,auth)
+    with SessionLocal() as db:
+        watch = db.get(Watch,wid)
+        watch.name = "Мій пошук"
+        watch.error = "eBay обмежив доступ (HTTP 403). Усі запити до eBay призупинено щонайменше на 15 хв."
+        db.add(WatchItem(watch_id=wid,ebay_id="123456789001",matches=True,is_new=True,baseline=False,
+                         data={"title":"Товар", "attributes":{}},detail_error="Не розпізнано сторінку товару eBay; характеристики поки недоступні."))
+        db.commit()
+    watch = client.get("/api/watches",headers=auth).json()[0]
+    assert watch["name"] == "Мій пошук"
+    assert watch["error"] == "eBay restricted access (HTTP 403). All eBay requests are paused for at least 15 min."
+    item = client.get("/api/items",headers=auth).json()["items"][0]
+    assert item["title"] == "Товар" and item["detail_error"].startswith("The eBay item format")
+    assert not item["notification_pending"] and not item["notification_sent"]
+    with SessionLocal() as db:
+        db.add(Notification(item_id=item["id"]))
+        db.commit()
+    assert client.get("/api/items",headers=auth).json()["items"][0]["notification_pending"]

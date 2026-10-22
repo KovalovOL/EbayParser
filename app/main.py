@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db, init_db, stamp
-from app.models import LoginChallenge, Notification, RefreshSession, ServiceState, User, Watch, WatchItem
+from app.models import LoginChallenge, Notification, RefreshSession, SeenListing, ServiceState, User, Watch, WatchItem
+from app.listing_identity import listing_identity
+from app.ebay_filters import COUNTRIES
+from app.messages import display_error
+from app.monitoring import monitoring_status
 from app.schemas import LoginStart, LoginVerify, WatchInput, WatchToggle
 from app.security import current_user, digest, new_tokens, rotate_refresh
 from app.telegram import TelegramClient, TelegramError
@@ -32,7 +36,7 @@ async def lifespan(app):
     await app.state.telegram.close()
 
 
-app = FastAPI(title="eBay Signal", lifespan=lifespan)
+app = FastAPI(title="Mira Tarel0chn1tsa", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
@@ -41,7 +45,7 @@ async def browser_security(request: Request, call_next):
     if request.method in {"POST", "PATCH", "PUT", "DELETE"}:
         origin = request.headers.get("origin")
         if origin and origin.rstrip("/") != settings.public_url.rstrip("/"):
-            return JSONResponse({"detail": "Недозволене джерело запиту"}, status_code=403)
+            return JSONResponse({"detail": "Request origin is not allowed"}, status_code=403)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -58,7 +62,7 @@ async def browser_security(request: Request, call_next):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html")
+    return templates.TemplateResponse(request=request, name="index.html", context={"countries": COUNTRIES})
 
 
 @app.get("/api/health")
@@ -90,7 +94,7 @@ def set_tokens(response: Response, tokens):
 @app.post("/api/auth/start")
 async def start_login(payload: LoginStart, request: Request, db: Session = Depends(get_db)):
     if not settings.telegram_bot_token:
-        raise HTTPException(503, "Додайте TELEGRAM_BOT_TOKEN або tg у .env")
+        raise HTTPException(503, "Telegram sign-in is not configured. Contact the administrator.")
     if not app.state.bot_username:
         try:
             app.state.bot_username = (await app.state.telegram.call("getMe"))["username"]
@@ -103,7 +107,7 @@ async def start_login(payload: LoginStart, request: Request, db: Session = Depen
     count = db.scalar(select(func.count()).select_from(LoginChallenge).where(
         LoginChallenge.ip == ip, LoginChallenge.created_at > now - 3600))
     if recent or count >= 20:
-        raise HTTPException(429, "Забагато запитів. Зачекайте хвилину перед новим кодом.")
+        raise HTTPException(429, "Too many login requests. Wait at least a minute before requesting another code.")
     challenge = LoginChallenge(id=secrets.token_urlsafe(24), username=payload.username, ip=ip,
                                expires_at=now + 600)
     db.add(challenge)
@@ -112,23 +116,36 @@ async def start_login(payload: LoginStart, request: Request, db: Session = Depen
             "bot_url": f"https://t.me/{app.state.bot_username}?start=login_{challenge.id}"}
 
 
+@app.get("/api/auth/challenges/{challenge_id}")
+def login_status(challenge_id: str, db: Session = Depends(get_db)):
+    # The random challenge ID is a capability. Never expose the OTP, hash, or Telegram identity.
+    challenge = db.get(LoginChallenge, challenge_id)
+    if challenge is None:
+        raise HTTPException(404, "Sign-in request not found. Request a new code.")
+    remaining = max(0, int(challenge.expires_at - stamp()))
+    status = ("used" if challenge.used else "locked" if challenge.attempts >= 5 else
+              "expired" if not remaining else "sent" if challenge.code_hash else "waiting")
+    return {"status": status, "expires_in": remaining,
+            "attempts_remaining": max(0, 5 - challenge.attempts)}
+
+
 @app.post("/api/auth/verify")
 def verify_login(payload: LoginVerify, response: Response, db: Session = Depends(get_db)):
     challenge = db.get(LoginChallenge, payload.challenge_id)
     if not challenge or challenge.used or challenge.expires_at < stamp() or challenge.attempts >= 5:
-        raise HTTPException(400, "Код недійсний або закінчився. Створіть новий запит.")
+        raise HTTPException(400, "This code has expired or is no longer valid. Request a new code.")
     if not challenge.code_hash:
-        raise HTTPException(400, "Спочатку відкрийте бота за посиланням і натисніть Start")
+        raise HTTPException(400, "Open the bot using your sign-in link and press Start first.")
     # Claim an attempt atomically before checking the OTP, including concurrent requests.
     claimed = db.execute(update(LoginChallenge).where(
         LoginChallenge.id == challenge.id, LoginChallenge.attempts < 5,
         LoginChallenge.used.is_(False)).values(attempts=LoginChallenge.attempts + 1))
     if claimed.rowcount != 1:
         db.rollback()
-        raise HTTPException(400, "Запит уже використано")
+        raise HTTPException(400, "This sign-in request has already been used.")
     if not hmac.compare_digest(challenge.code_hash, digest(challenge.id + ":" + payload.code)):
         db.commit()
-        raise HTTPException(400, "Невірний код підтвердження")
+        raise HTTPException(400, "Incorrect verification code. Check the six digits in Telegram.")
     challenge.used = True
     user = db.scalar(select(User).where(User.telegram_id == challenge.telegram_id))
     if user is None:
@@ -146,7 +163,7 @@ def verify_login(payload: LoginVerify, response: Response, db: Session = Depends
 def refresh(request: Request, response: Response, db: Session = Depends(get_db)):
     token = request.cookies.get("refresh_token")
     if not token:
-        raise HTTPException(401, "Немає активної сесії")
+        raise HTTPException(401, "No active session")
     return set_tokens(response, rotate_refresh(db, token))
 
 
@@ -168,15 +185,17 @@ def me(user: User = Depends(current_user)):
 
 @app.get("/api/status")
 def status(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    states = {s.name: {"online": stamp() - s.heartbeat_at < 120, "last_seen": s.heartbeat_at, "error": s.error}
+    states = {s.name: {"online": stamp() - s.heartbeat_at < 120, "last_seen": s.heartbeat_at, "error": display_error(s.error)}
               for s in db.scalars(select(ServiceState))}
-    return {"services": states, "strict_newness": True}
+    return {"services": states, "monitoring": monitoring_status(db, user.id, states),
+            "newness_basis": "title_price_location_per_user",
+            "search_pages_per_check": 1, "automatic_item_details": False}
 
 
 def own_watch(db, user, watch_id):
     watch = db.scalar(select(Watch).where(Watch.id == watch_id, Watch.user_id == user.id))
     if not watch:
-        raise HTTPException(404, "Пошук не знайдено")
+        raise HTTPException(404, "Search not found")
     return watch
 
 
@@ -184,7 +203,7 @@ def watch_dict(watch, counts=None):
     return {k: getattr(watch, k) for k in (
         "id", "name", "query", "filters", "interval_seconds", "active", "initialized", "created_at",
         "tracking_since", "last_checked_at", "next_check_at", "error", "search_url", "truncated"
-    )} | {"counts": counts or {}}
+    )} | {"counts": counts or {}, "error": display_error(watch.error)}
 
 
 @app.get("/api/watches")
@@ -205,7 +224,7 @@ def list_watches(user: User = Depends(current_user), db: Session = Depends(get_d
 @app.post("/api/watches", status_code=201)
 def create_watch(payload: WatchInput, user: User = Depends(current_user), db: Session = Depends(get_db)):
     if db.scalar(select(func.count()).select_from(Watch).where(Watch.user_id == user.id)) >= 30:
-        raise HTTPException(400, "Максимум 30 пошуків на користувача")
+        raise HTTPException(400, "You can save up to 30 searches. Delete a search before adding another.")
     watch = Watch(user_id=user.id, name=payload.name, query=payload.query,
                   filters=payload.filters.model_dump(), interval_seconds=payload.interval_seconds)
     db.add(watch)
@@ -250,9 +269,9 @@ def toggle_watch(watch_id: int, payload: WatchToggle, user: User = Depends(curre
 def check_watch(watch_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     watch = own_watch(db, user, watch_id)
     if not watch.active:
-        raise HTTPException(400, "Спочатку відновіть пошук")
+        raise HTTPException(400, "Resume this search first.")
     if watch.last_checked_at and stamp() - watch.last_checked_at < 60:
-        raise HTTPException(429, "Ручна перевірка доступна раз на хвилину")
+        raise HTTPException(429, "You can request a manual check once per minute.")
     watch.next_check_at = stamp()
     db.commit()
     return {"ok": True}
@@ -269,7 +288,7 @@ def delete_watch(watch_id: int, user: User = Depends(current_user), db: Session 
 def list_items(watch_id: int | None = None, only_new: bool = False, offset: int = 0, limit: int = 30,
                user: User = Depends(current_user), db: Session = Depends(get_db)):
     if offset < 0 or not 1 <= limit <= 100:
-        raise HTTPException(422, "Некоректна пагінація")
+        raise HTTPException(422, "Invalid page parameters")
     query = select(WatchItem, Watch.name).join(Watch).where(Watch.user_id == user.id, WatchItem.matches.is_(True))
     if watch_id is not None:
         own_watch(db, user, watch_id)
@@ -277,32 +296,25 @@ def list_items(watch_id: int | None = None, only_new: bool = False, offset: int 
     if only_new:
         query = query.where(WatchItem.is_new.is_(True))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
-    rows = db.execute(query.order_by(WatchItem.first_seen_at.desc(), WatchItem.id.desc()).offset(offset).limit(limit))
+    rows = db.execute(query.order_by(WatchItem.first_seen_at.desc(), WatchItem.id.desc()).offset(offset).limit(limit)).all()
+    keys = {listing_identity(item.data)["fingerprint"] for item, _ in rows}
+    alerts = {}
+    if keys:
+        for fingerprint, notification in db.execute(select(SeenListing.fingerprint, Notification).join(
+            Notification, Notification.seen_listing_id == SeenListing.id
+        ).where(SeenListing.user_id == user.id, SeenListing.fingerprint.in_(keys))):
+            alerts[fingerprint] = notification
     items = []
     for item, name in rows:
-        notification = db.scalar(select(Notification).where(Notification.item_id == item.id))
+        notification = alerts.get(listing_identity(item.data)["fingerprint"])
+        if notification is None:
+            notification = db.scalar(select(Notification).where(Notification.item_id == item.id,
+                Notification.seen_listing_id.is_(None)).order_by(Notification.id.desc()).limit(1))
         items.append(item.data | {"id": item.id, "watch_id": item.watch_id, "watch_name": name,
                                   "baseline": item.baseline, "is_new": item.is_new,
                                   "first_seen_at": item.first_seen_at, "last_seen_at": item.last_seen_at,
-                                  "detailed_at": item.detailed_at, "detail_error": item.detail_error,
+                                  "detailed_at": item.detailed_at, "detail_error": display_error(item.detail_error),
                                   "notification_sent": bool(notification and notification.sent_at),
-                                  "notification_error": notification.error if notification else None})
+                                  "notification_pending": bool(notification and not notification.sent_at),
+                                  "notification_error": display_error(notification.error) if notification else None})
     return {"items": items, "total": total, "offset": offset, "limit": limit}
-
-
-@app.post("/api/items/{item_id}/details")
-def request_details(item_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    item = db.scalar(select(WatchItem).join(Watch).where(WatchItem.id == item_id, Watch.user_id == user.id))
-    if item is None:
-        raise HTTPException(404, "Товар не знайдено")
-    watch = db.get(Watch, item.watch_id)
-    if not watch.active:
-        raise HTTPException(400, "Відновіть пошук для завантаження характеристик")
-    if item.detailed_at and stamp() - item.detailed_at < 300:
-        return {"ok": True, "message": "Характеристики вже оновлено"}
-    # Prioritize this item without fetching arbitrary URLs from the API process.
-    item.detailed_at = None
-    item.detail_error = None
-    watch.next_check_at = stamp()
-    db.commit()
-    return {"ok": True, "message": "Характеристики додано в чергу; зачекайте наступної перевірки"}
