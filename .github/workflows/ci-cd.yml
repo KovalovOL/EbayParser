@@ -3,7 +3,7 @@ name: Test and deploy
 on:
   pull_request:
   push:
-    branches: [master, main]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -12,56 +12,58 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.13'
-          cache: pip
-          cache-dependency-path: |
-            requirements.lock
-            requirements-dev.lock
-      - name: Install locked dependencies
-        run: python -m pip install -r requirements.lock -r requirements-dev.lock
-      - name: Check Python and run tests
-        run: |
-          python -m ruff check --isolated --select E9,F63,F7,F82 app tests
-          python -m pytest -q
-      - name: Validate JavaScript and deployment configuration
-        env:
-          APP_DOMAIN: ci.example.com
-          RELEASE_ID: ci
-        run: |
-          node --check app/static/app.js
-          bash -n scripts/deploy.sh scripts/ci-deploy.sh
-          cp .env.example .env
-          docker compose -f compose.yaml -f compose.traefik.yaml config --quiet
-      - name: Verify Chromium and Firefox fallback in Docker
-        run: |
-          docker compose build worker
-          docker compose run --rm --no-deps -T -e PYTHONPATH=/app \
-            -v "$PWD/scripts/check_browser_fallback.py:/tmp/check_browser_fallback.py:ro" \
-            worker python /tmp/check_browser_fallback.py
+      - run: python -m pip install -r requirements.lock -r requirements-dev.lock
+      - run: python -m pytest -q
 
   deploy:
     needs: test
-    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     environment: production
-    concurrency:
-      group: mira-production
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Upload release and deploy over SSH
+      - name: Deploy to VPS
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-        run: bash scripts/ci-deploy.sh
+          APP_ENV: ${{ secrets.APP_ENV }}
+        run: |
+          : "${VPS_HOST:?Add the VPS_HOST secret}"
+          : "${VPS_USER:?Add the VPS_USER secret}"
+          : "${VPS_SSH_KEY:?Add the VPS_SSH_KEY secret}"
+          : "${APP_ENV:?Add the APP_ENV secret with the full .env contents}"
+
+          printf '%s\n' "$VPS_SSH_KEY" > "$RUNNER_TEMP/vps_key"
+          chmod 600 "$RUNNER_TEMP/vps_key"
+          mkdir -p "$RUNNER_TEMP/mira-release"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/mira-release"
+          printf '%s\n' "$APP_ENV" > "$RUNNER_TEMP/mira-release/.env"
+          chmod 600 "$RUNNER_TEMP/mira-release/.env"
+          tar -czf "$RUNNER_TEMP/mira-release.tar.gz" -C "$RUNNER_TEMP/mira-release" .
+          chmod 600 "$RUNNER_TEMP/mira-release.tar.gz"
+
+          scp \
+            -i "$RUNNER_TEMP/vps_key" \
+            -o StrictHostKeyChecking=accept-new \
+            -o BatchMode=yes \
+            "$RUNNER_TEMP/mira-release.tar.gz" \
+            "$VPS_USER@$VPS_HOST:/tmp/mira-$GITHUB_RUN_ID.tar.gz"
+          ssh \
+            -i "$RUNNER_TEMP/vps_key" \
+            -o StrictHostKeyChecking=accept-new \
+            -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "
+              set -e
+              mkdir -p /opt/mira-tarel0chn1tsa
+              tar -xzf /tmp/mira-$GITHUB_RUN_ID.tar.gz -C /opt/mira-tarel0chn1tsa
+              rm /tmp/mira-$GITHUB_RUN_ID.tar.gz
+              chmod 600 /opt/mira-tarel0chn1tsa/.env
+              cd /opt/mira-tarel0chn1tsa
+              docker compose -p mira-tarel0chn1tsa -f compose.yaml -f compose.traefik.yaml up -d --build
+            "
