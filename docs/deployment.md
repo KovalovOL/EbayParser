@@ -13,10 +13,9 @@ Add these secrets in repository settings, or in the `production` environment:
 | `VPS_SSH_KEY` | Private SSH key whose public key is in that user's `authorized_keys` |
 | `APP_ENV` | The complete multiline contents of the app's `.env` file |
 
-Set `APP_ENV` as a **secret** because it contains the Telegram bot token. For example:
+Set `APP_ENV` as a **secret** because it contains the Telegram bot token. Paste the application's `.env` settings; `APP_DOMAIN` is not needed because the production Compose file already uses `miratarelochnitsa.store`:
 
 ```dotenv
-APP_DOMAIN=miratarelochnitsa.store
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_BOT_USERNAME=your_bot_username
 ```
