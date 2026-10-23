@@ -14,10 +14,10 @@ from app.config import get_settings
 from app.db import get_db, init_db, stamp
 from app.models import LoginChallenge, Notification, RefreshSession, SeenListing, ServiceState, User, Watch, WatchItem
 from app.listing_identity import listing_identity
-from app.ebay_filters import COUNTRIES
+from app.ebay_filters import COUNTRIES, LOCATION_REGIONS
 from app.messages import display_error
 from app.monitoring import monitoring_status
-from app.schemas import LoginStart, LoginVerify, WatchInput, WatchToggle
+from app.schemas import Filters, LoginStart, LoginVerify, WatchInput, WatchToggle
 from app.security import current_user, digest, new_tokens, rotate_refresh
 from app.telegram import TelegramClient, TelegramError
 
@@ -62,7 +62,8 @@ async def browser_security(request: Request, call_next):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html", context={"countries": COUNTRIES})
+    return templates.TemplateResponse(request=request, name="index.html",
+                                      context={"countries": COUNTRIES, "location_regions": LOCATION_REGIONS})
 
 
 @app.get("/api/health")
@@ -203,7 +204,8 @@ def watch_dict(watch, counts=None):
     return {k: getattr(watch, k) for k in (
         "id", "name", "query", "filters", "interval_seconds", "active", "initialized", "created_at",
         "tracking_since", "last_checked_at", "next_check_at", "error", "search_url", "truncated"
-    )} | {"counts": counts or {}, "error": display_error(watch.error)}
+    )} | {"filters": Filters(**watch.filters).model_dump(),
+          "counts": counts or {}, "error": display_error(watch.error)}
 
 
 @app.get("/api/watches")
@@ -235,7 +237,7 @@ def create_watch(payload: WatchInput, user: User = Depends(current_user), db: Se
 @app.put("/api/watches/{watch_id}")
 def edit_watch(watch_id: int, payload: WatchInput, user: User = Depends(current_user), db: Session = Depends(get_db)):
     watch = own_watch(db, user, watch_id)
-    changed = watch.query != payload.query or watch.filters != payload.filters.model_dump()
+    changed = watch.query != payload.query or Filters(**watch.filters).model_dump() != payload.filters.model_dump()
     watch.name, watch.query = payload.name, payload.query
     watch.filters, watch.interval_seconds = payload.filters.model_dump(), payload.interval_seconds
     if changed:

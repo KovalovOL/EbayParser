@@ -11,6 +11,10 @@ const money = item => item.price_text || (item.price != null ? `${item.price} ${
 const imageURL = value => {try {const u = new URL(value); return u.protocol === "https:" && (u.hostname === "i.ebayimg.com" || u.hostname.endsWith(".ebayimg.com")) ? u.href : "";} catch {return "";}};
 const itemURL = value => {try {const u = new URL(value); return u.protocol === "https:" && u.hostname === "www.ebay.com" && /^\/itm\/\d+$/.test(u.pathname) ? u.href : "#";} catch {return "#";}};
 const conditionLabels = {new:"New",used:"Used",refurbished:"Refurbished",parts:"For parts"};
+const regionLabels = {us:"US Only",north_america:"North America",europe:"Europe",asia:"Asia",worldwide:"Worldwide"};
+const extraFilterLabels = {accepts_offers:"Accepts offers",returns_accepted:"Returns accepted",free_returns:"Free returns",sale_items:"Sale items"};
+const normalizedFilters = filters => ({location_region:filters.location ? "custom" : "default",
+  accepts_offers:false,returns_accepted:false,free_returns:false,sale_items:false,...filters});
 function errorText(data) {
   if (Array.isArray(data.detail)) return data.detail.map(x => x.msg.replace(/^Value error, /, "")).join(". ");
   return typeof data.detail === "string" ? data.detail : "The request failed. Please try again.";
@@ -115,9 +119,11 @@ function renderWatches() {
   if (!w) return;
   const f = w.filters;
   const tags = [f.min_price != null || f.max_price != null ? `${f.min_price ?? 0} – ${f.max_price ?? "any"} ${f.currency}` : f.currency,
+    regionLabels[f.location_region] && `Location: ${regionLabels[f.location_region]}`,
     f.location && `Location: ${f.location}`,f.seller && `Seller: ${f.seller}`,conditionLabels[f.condition],
     f.buying_format !== "any" && (f.buying_format === "auction" ? "Auction" : "Buy It Now"),
     f.free_shipping && "Free shipping",f.include_shipping && "Shipping included in limits",
+    ...Object.entries(extraFilterLabels).filter(([key]) => f[key]).map(([,label]) => label),
     ...(f.exclude_keywords || []).map(v => `Exclude: ${v}`),...Object.entries(f.attributes || {}).map(([k,v]) => `${k}: ${v}`),
     f.category_id && `Category: ${f.category_id}`].filter(Boolean);
   const blocked = state.monitoring?.state === "restricted";
@@ -232,13 +238,24 @@ function watchPayload() {
   }
   const query = form.get("query").trim();
   return {name:form.get("name").trim() || query.slice(0,100),query,interval_seconds:Number(form.get("interval_seconds")),filters:{
-    min_price:form.get("min_price") === "" ? null : Number(form.get("min_price")),max_price:form.get("max_price") === "" ? null : Number(form.get("max_price")),currency:form.get("currency"),condition:form.get("condition"),buying_format:form.get("buying_format"),location:form.get("location").trim(),seller:form.get("seller").trim(),free_shipping:form.has("free_shipping"),include_shipping:form.has("include_shipping"),exclude_keywords:form.get("exclude_keywords").split(",").map(s => s.trim()).filter(Boolean),category_id:form.get("category_id"),attributes}};
+    min_price:form.get("min_price") === "" ? null : Number(form.get("min_price")),max_price:form.get("max_price") === "" ? null : Number(form.get("max_price")),currency:form.get("currency"),condition:form.get("condition"),buying_format:form.get("buying_format"),
+    location_region:form.get("location_region"),location:form.get("location_region") === "custom" ? (form.get("location") || "").trim() : "",
+    seller:form.get("seller").trim(),free_shipping:form.has("free_shipping"),include_shipping:form.has("include_shipping"),
+    ...Object.fromEntries(Object.keys(extraFilterLabels).map(key => [key,form.has(key)])),
+    exclude_keywords:form.get("exclude_keywords").split(",").map(s => s.trim()).filter(Boolean),category_id:form.get("category_id"),attributes}};
+}
+function updateLocation() {
+  const selected = $('#watch-form input[name="location_region"]:checked');
+  const custom = selected.value === "custom";
+  $("#custom-location").hidden = !custom;
+  $("#location").disabled = !custom; $("#location").required = custom;
+  $("#location-summary").textContent = selected.nextElementSibling.textContent;
 }
 function criteriaChanged() {
   if (!state.editing) return false;
   const original = state.watches.find(w => w.id === state.editing); if (!original) return false;
   const canonical = value => value && typeof value === "object" ? Array.isArray(value) ? value.map(canonical) : Object.fromEntries(Object.keys(value).sort().map(k => [k,canonical(value[k])])) : value;
-  try {const body = watchPayload(); return body.query !== original.query || JSON.stringify(canonical(body.filters)) !== JSON.stringify(canonical(original.filters));}
+  try {const body = watchPayload(); return body.query !== original.query || JSON.stringify(canonical(body.filters)) !== JSON.stringify(canonical(normalizedFilters(original.filters)));}
   catch {return true;}
 }
 function updateChangeNotice() {
@@ -251,7 +268,7 @@ function openWatch(watch = null) {
   const form = $("#watch-form"); form.reset(); $("#attribute-rows").replaceChildren();
   showError("#watch-error",""); $("#watch-dialog-title").textContent = watch ? "Edit search" : "Add search";
   if (watch) {
-    for (const [key,value] of Object.entries({name:watch.name,query:watch.query,interval_seconds:watch.interval_seconds,...watch.filters})) {
+    for (const [key,value] of Object.entries({name:watch.name,query:watch.query,interval_seconds:watch.interval_seconds,...normalizedFilters(watch.filters)})) {
       const input = form.elements.namedItem(key); if (!input || key === "attributes") continue;
       if (input.type === "checkbox") input.checked = value;
       else input.value = Array.isArray(value) ? value.join(", ") : value ?? "";
@@ -264,6 +281,7 @@ function openWatch(watch = null) {
     Object.entries(watch.filters.attributes || {}).forEach(([k,v]) => addAttribute(k,v));
     $("#watch-advanced").open = Object.keys(watch.filters.attributes || {}).length > 0 || !!watch.filters.category_id;
   } else $("#watch-advanced").open = false;
+  $("#watch-location").open = true; updateLocation();
   $("#watch-create-note").hidden = !!watch; updateChangeNotice(); $("#watch-dialog").showModal();
 }
 function showItem(id) {
@@ -352,7 +370,7 @@ $("#logout").addEventListener("click",async () => {
   catch(error) {toast(error.message);} finally {$("#logout").disabled = false;}
 });
 $("#watch-form").addEventListener("input",updateChangeNotice);
-$("#watch-form").addEventListener("change",updateChangeNotice);
+$("#watch-form").addEventListener("change",() => {updateLocation(); updateChangeNotice();});
 $("#watch-form").addEventListener("submit",e => {e.preventDefault(); busy(e.currentTarget,async () => {
   const body = watchPayload();
   if (!body.query) throw new Error("Enter your eBay search keywords.");

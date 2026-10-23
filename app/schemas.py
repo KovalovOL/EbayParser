@@ -1,4 +1,5 @@
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -26,10 +27,15 @@ class Filters(BaseModel):
     currency: str = Field(default="USD", pattern=r"^(USD|EUR|GBP|CAD|AUD)$")
     condition: str = Field(default="any", pattern=r"^(any|new|used|refurbished|parts)$")
     buying_format: str = Field(default="any", pattern=r"^(any|buy_now|auction)$")
+    location_region: Literal["default", "us", "north_america", "europe", "asia", "worldwide", "custom"] = "default"
     location: str = Field(default="", max_length=100)
     seller: str = Field(default="", max_length=100)
     free_shipping: bool = False
     include_shipping: bool = False
+    accepts_offers: bool = False
+    returns_accepted: bool = False
+    free_returns: bool = False
+    sale_items: bool = False
     exclude_keywords: list[str] = Field(default_factory=list, max_length=30)
     category_id: str = Field(default="", pattern=r"^\d{0,12}$")
     attributes: dict[str, str] = Field(default_factory=dict, max_length=30)
@@ -52,6 +58,13 @@ class Filters(BaseModel):
         if any(not v.strip() or len(v) > 100 for v in self.exclude_keywords):
             raise ValueError("Each excluded word or phrase must contain 1 to 100 characters.")
         self.location = self.location.strip()
+        # Older saved searches only had a text location. Preserve their meaning.
+        if self.location and self.location_region == "default":
+            self.location_region = "custom"
+        if self.location_region == "custom" and not self.location:
+            raise ValueError("Enter a country or location, or choose a region instead.")
+        if self.location and self.location_region != "custom":
+            raise ValueError("Choose either an item region or a specific location.")
         self.seller = self.seller.strip()
         self.exclude_keywords = [value.strip() for value in self.exclude_keywords]
         return self

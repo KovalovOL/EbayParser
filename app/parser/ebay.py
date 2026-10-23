@@ -17,7 +17,7 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException as CurlRequestError
 
 from app.config import Settings
-from app.ebay_filters import country_filter
+from app.ebay_filters import NATIVE_BOOLEAN_FILTERS, REGION_PARAMS, country_filter
 from app.parser.errors import BrowserError, EbayAccessError, ParseError
 
 log = logging.getLogger(__name__)
@@ -299,6 +299,12 @@ def build_search_url(query: str, filters: dict, page: int = 1) -> str:
         params["LH_Auction" if filters["buying_format"] == "auction" else "LH_BIN"] = "1"
     if filters.get("free_shipping"):
         params["LH_FS"] = "1"
+    for filter_name, parameter in NATIVE_BOOLEAN_FILTERS.items():
+        if filters.get(filter_name):
+            params[parameter] = "1"
+    region = filters.get("location_region", "default")
+    if region in REGION_PARAMS:
+        params["LH_PrefLoc"] = REGION_PARAMS[region]
     if filters.get("category_id"):
         params["_sacat"] = filters["category_id"]
     if filters.get("seller"):
@@ -325,6 +331,10 @@ def build_search_url(query: str, filters: dict, page: int = 1) -> str:
 def matches_filters(item: Listing, filters: dict, *, native: bool = False) -> bool | None:
     """None means a required value is absent; such a listing must never trigger a notification."""
     missing = False
+    # These criteria are enforced by eBay's search, not inferred from incomplete card text.
+    regional = filters.get("location_region", "default") in REGION_PARAMS.keys() - {"worldwide"}
+    if not native and (regional or any(filters.get(key) for key in NATIVE_BOOLEAN_FILTERS)):
+        missing = True
     if any(value in item.availability.casefold() for value in ("outofstock", "soldout", "discontinued")):
         return False
     if any(word.casefold() in (item.title + " " + item.condition).casefold()

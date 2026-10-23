@@ -41,7 +41,7 @@ async def check(url: str, output: Path):
                                     active_searches=1, failed_searches=0, error=None, browser="chromium"), bot_online=True)
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, chromium_sandbox=True,
-            executable_path=p.chromium.executable_path,
+            executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH") or p.chromium.executable_path,
             env={key:os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG") if key in os.environ})
         context = await browser.new_context(viewport={"width":1440,"height":1000}, device_scale_factor=1)
         errors = []
@@ -178,6 +178,18 @@ async def check(url: str, output: Path):
         await expect(page.locator("#watch-save")).to_have_text("Replace results & save")
         await page.locator('[data-close="watch-dialog"]').first.click()
         await page.locator("#new-watch").click()
+        await expect(page.locator('[name="location_region"][value="default"]')).to_be_checked()
+        await expect(page.locator("#custom-location")).not_to_be_visible()
+        await page.locator('[name="location_region"][value="custom"]').check()
+        await expect(page.locator("#location")).to_be_visible()
+        await page.locator("#location").fill("Japan")
+        await page.locator('[name="location_region"][value="europe"]').check()
+        await expect(page.locator("#location")).to_be_disabled()
+        await expect(page.locator("#location-summary")).to_have_text("Europe")
+        for name in ("accepts_offers", "returns_accepted", "free_returns", "sale_items"):
+            await page.locator(f'[name="{name}"]').check()
+        await page.locator("#watch-location").scroll_into_view_if_needed()
+        await page.screenshot(path=str(output/"search-filters-desktop.png"), full_page=True)
         await page.locator("#watch-query").fill("Fujifilm X100")
         await page.locator("#min-price").fill("100")
         await page.locator("#max-price").fill("50")
@@ -187,7 +199,23 @@ async def check(url: str, output: Path):
         await page.locator("#watch-save").click()
         await expect(page.locator("#watch-dialog")).not_to_be_visible()
         assert fixtures["created"]["name"] == "Fujifilm X100"
+        saved_filters = fixtures["created"]["filters"]
+        assert saved_filters["location_region"] == "europe" and saved_filters["location"] == ""
+        assert all(saved_filters[key] for key in ("accepts_offers", "returns_accepted", "free_returns", "sale_items"))
         await expect(page.locator("#page-title")).to_have_text("Fujifilm X100")
+        await expect(page.locator("#selected-watch .filter-tags")).to_contain_text("Location: Europe")
+        await expect(page.locator("#selected-watch .filter-tags")).to_contain_text("Free returns")
+        await page.locator('[data-action="edit"]').click()
+        await expect(page.locator('[name="location_region"][value="europe"]')).to_be_checked()
+        for name in ("accepts_offers", "returns_accepted", "free_returns", "sale_items"):
+            await expect(page.locator(f'[name="{name}"]')).to_be_checked()
+        await expect(page.locator("#watch-change-note")).not_to_be_visible()
+        await page.locator('[name="location_region"][value="asia"]').check()
+        await expect(page.locator("#watch-change-note")).to_be_visible()
+        await page.locator("#watch-save").click()
+        await expect(page.locator("#watch-dialog")).not_to_be_visible()
+        assert fixtures["updates"][-1]["filters"]["location_region"] == "asia"
+        await expect(page.locator("#selected-watch .filter-tags")).to_contain_text("Location: Asia")
         await page.locator('[data-action="delete"]').click()
         await expect(page.locator("#delete-description")).to_contain_text("cannot be undone")
         await page.locator('[data-close="delete-dialog"]').click()
@@ -223,6 +251,11 @@ async def check(url: str, output: Path):
         await expect(page.locator(".skip-link")).not_to_be_in_viewport()
         await page.screenshot(path=str(output/"dashboard-mobile.png"),full_page=True)
         await page.locator("#new-watch").click()
+        await expect(page.locator('[name="location_region"][value="default"]')).to_be_checked()
+        await expect(page.locator('[name="free_returns"]')).not_to_be_checked()
+        await page.locator('[name="location_region"][value="europe"]').check()
+        await expect(page.locator("#location-summary")).to_have_text("Europe")
+        await page.locator("#watch-location").scroll_into_view_if_needed()
         assert await page.locator("#watch-dialog").evaluate("el => el.scrollWidth <= el.clientWidth")
         await page.screenshot(path=str(output/"search-mobile.png"),full_page=True)
         await page.locator('[data-close="watch-dialog"]').first.click()
@@ -233,7 +266,8 @@ async def check(url: str, output: Path):
         assert await page.locator("#login-dialog").evaluate("el => el.scrollWidth <= el.clientWidth")
         assert not errors, errors
         await browser.close()
-    print("UI checks passed: guided login, listings, search editing, delete/cancel, offline retry, monitoring states, Telegram status, removed banner, fixed mobile status, mobile layout, sign-out reset.")
+    print("UI checks passed: login, listings, region selection, custom country, offers/returns/sale filters, "
+          "filter persistence and editing, delete/cancel, offline retry, monitoring states, mobile layout, sign-out.")
 
 
 if __name__ == "__main__":

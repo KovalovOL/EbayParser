@@ -143,6 +143,39 @@ def test_native_ebay_filters_include_seller_country_exclusions_and_item_specific
     assert unquote(query["Storage%20Capacity"][0]) == "1 TB"
 
 
+@pytest.mark.parametrize("region, value", [
+    ("us", "1"), ("north_america", "3"), ("europe", "5"), ("asia", "6"), ("worldwide", "2"),
+])
+def test_item_regions_use_marketplace_location_preferences(region, value):
+    filters = Filters(location_region=region).model_dump()
+    query = parse_qs(urlparse(build_search_url("Sony", filters)).query)
+    assert query["LH_PrefLoc"] == [value]
+    assert "_salic" not in query and "LH_LocatedIn" not in query
+    # A search card does not need to expose regional metadata to use eBay's filter.
+    assert matches_filters(Listing("1", "", "Sony", currency="USD"), filters, native=True) is True
+
+
+def test_default_and_specific_locations_do_not_send_a_regional_preference():
+    query = parse_qs(urlparse(build_search_url("Sony", Filters().model_dump())).query)
+    assert "LH_PrefLoc" not in query and "_salic" not in query
+    filters = Filters(location=" Japan ").model_dump()
+    assert filters["location_region"] == "custom"
+    query = parse_qs(urlparse(build_search_url("Sony", filters)).query)
+    assert query["_salic"] == ["104"] and query["LH_LocatedIn"] == ["1"]
+    assert "LH_PrefLoc" not in query
+
+
+def test_offer_return_and_sale_filters_are_enforced_by_native_search():
+    filters = Filters(accepts_offers=True, returns_accepted=True, free_returns=True, sale_items=True).model_dump()
+    query = parse_qs(urlparse(build_search_url("Sony", filters)).query)
+    assert all(query[key] == ["1"] for key in ("LH_BO", "LH_RPA", "LH_FR", "LH_SaleItems"))
+    item = Listing("1", "", "Sony", currency="USD")
+    assert matches_filters(item, filters, native=True) is True
+    assert matches_filters(item, filters) is None
+    unfiltered = parse_qs(urlparse(build_search_url("Sony", Filters().model_dump())).query)
+    assert not {"LH_BO", "LH_RPA", "LH_FR", "LH_SaleItems"} & unfiltered.keys()
+
+
 def test_native_filters_do_not_require_per_item_metadata():
     item = Listing("1", "", "Sony", price=10, currency="USD")
     filters = Filters(condition="used", buying_format="buy_now", seller="retro_shop", location="Japan",

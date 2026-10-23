@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import select
 
 from app.db import SessionLocal
@@ -37,6 +38,55 @@ def test_filter_change_resets_baseline_and_cascades_notifications(client,auth):
     with SessionLocal() as db:
         assert db.scalar(select(WatchItem)) is None
         assert db.scalar(select(Notification)) is None
+
+
+def test_new_filters_round_trip_and_region_change_resets_snapshot(client, auth):
+    payload = {"name":"Camera", "query":"sony camera", "filters":{
+        "location_region":"europe", "accepts_offers":True, "returns_accepted":True,
+        "free_returns":True, "sale_items":True}}
+    response = client.post("/api/watches", headers=auth, json=payload)
+    assert response.status_code == 201
+    saved = response.json()
+    assert all(saved["filters"][key] == value for key, value in payload["filters"].items())
+    assert client.get("/api/watches", headers=auth).json()[0]["filters"] == saved["filters"]
+    with SessionLocal() as db:
+        db.get(Watch, saved["id"]).initialized = True
+        db.commit()
+    payload["filters"]["location_region"] = "asia"
+    updated = client.put(f'/api/watches/{saved["id"]}', headers=auth, json=payload)
+    assert updated.status_code == 200 and not updated.json()["initialized"]
+    assert updated.json()["filters"]["location_region"] == "asia"
+
+
+@pytest.mark.parametrize("filters", [
+    {"location_region":"invalid"}, {"location_region":"custom"},
+    {"location_region":"custom", "location":"  "},
+    {"location_region":"europe", "location":"Japan"},
+])
+def test_invalid_or_conflicting_item_locations_are_rejected(client, auth, filters):
+    response = client.post("/api/watches", headers=auth, json={"name":"x", "query":"x", "filters":filters})
+    assert response.status_code == 422
+
+
+def test_editing_legacy_filters_without_changes_keeps_saved_results(client, auth):
+    wid = create(client, auth)
+    new_fields = {"location_region", "accepts_offers", "returns_accepted", "free_returns", "sale_items"}
+    with SessionLocal() as db:
+        watch = db.get(Watch, wid)
+        watch.filters = {key: value for key, value in watch.filters.items() if key not in new_fields} | {
+            "location":"Japan"}
+        watch.initialized = True
+        db.add(WatchItem(watch_id=wid, ebay_id="123456789001", data={}, baseline=True, matches=True))
+        db.commit()
+    saved = client.get("/api/watches", headers=auth).json()[0]
+    assert saved["filters"]["location_region"] == "custom"
+    assert not saved["filters"]["accepts_offers"]
+    payload = {key: saved[key] for key in ("name", "query", "filters", "interval_seconds")}
+    payload["name"] = "Renamed legacy search"
+    updated = client.put(f"/api/watches/{wid}", headers=auth, json=payload)
+    assert updated.status_code == 200 and updated.json()["initialized"]
+    with SessionLocal() as db:
+        assert db.scalar(select(WatchItem).where(WatchItem.watch_id == wid)) is not None
 
 
 def test_pause_and_resume_resets_tracking_window(client,auth):
