@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 import secrets
 from contextlib import asynccontextmanager
@@ -57,13 +58,18 @@ async def browser_security(request: Request, call_next):
     )
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+    elif request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    assets = {name: hashlib.sha256((ROOT / "static" / name).read_bytes()).hexdigest()[:16]
+              for name in ("style.css", "app.js")}
     return templates.TemplateResponse(request=request, name="index.html",
-                                      context={"countries": COUNTRIES, "location_regions": LOCATION_REGIONS})
+                                      context={"countries": COUNTRIES, "location_regions": LOCATION_REGIONS,
+                                               "assets": assets})
 
 
 @app.get("/api/health")

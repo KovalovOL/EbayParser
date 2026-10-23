@@ -12,11 +12,14 @@ _ALIASES = {
 COUNTRIES = tuple((code, name, _ALIASES.get(name, ())) for code, name in
                   json.loads(Path(__file__).with_name("ebay_countries.json").read_text())["countries"])
 
-# Item-location preferences on ebay.com (these values differ on other marketplaces).
+# Copied from ebay.com's live search-result links on 2026-10-23.
+# The Advanced Search form still emits older US/North America values;
+# use the result-page links, not those legacy form values.
+# Source snapshot: tests/fixtures/ebay-location-links.json.
 LOCATION_REGIONS = (
-    ("default", "Default", ""),
-    ("us", "US Only", "1"),
-    ("north_america", "North America", "3"),
+    ("default", "Default", "98"),
+    ("us", "US Only", "3"),
+    ("north_america", "North America", "4"),
     ("europe", "Europe", "5"),
     ("asia", "Asia", "6"),
     ("worldwide", "Worldwide", "2"),

@@ -230,26 +230,28 @@ function addAttribute(key = "",value = "") {
 }
 function watchPayload() {
   const form = new FormData($("#watch-form")); const attributes = {};
+  // Disabled controls are omitted from FormData, so optional fields may be absent.
+  const value = name => String(form.get(name) ?? "").trim();
   for (const row of $("#attribute-rows").children) {
     const [k,v] = row.querySelectorAll("input"); const key = k.value.trim();
     if (!key || !v.value.trim()) throw new Error("Enter a name and value for each attribute, or remove the empty row.");
     if (Object.keys(attributes).some(x => x.toLowerCase() === key.toLowerCase())) throw new Error(`The attribute “${key}” is listed twice. Keep one value per attribute.`);
     attributes[key] = v.value.trim();
   }
-  const query = form.get("query").trim();
-  return {name:form.get("name").trim() || query.slice(0,100),query,interval_seconds:Number(form.get("interval_seconds")),filters:{
-    min_price:form.get("min_price") === "" ? null : Number(form.get("min_price")),max_price:form.get("max_price") === "" ? null : Number(form.get("max_price")),currency:form.get("currency"),condition:form.get("condition"),buying_format:form.get("buying_format"),
-    location_region:form.get("location_region"),location:form.get("location_region") === "custom" ? (form.get("location") || "").trim() : "",
-    seller:form.get("seller").trim(),free_shipping:form.has("free_shipping"),include_shipping:form.has("include_shipping"),
+  const query = value("query"); const region = value("location_region") || "default";
+  return {name:value("name") || query.slice(0,100),query,interval_seconds:Number(value("interval_seconds")),filters:{
+    min_price:value("min_price") === "" ? null : Number(value("min_price")),max_price:value("max_price") === "" ? null : Number(value("max_price")),currency:value("currency"),condition:value("condition"),buying_format:value("buying_format"),
+    location_region:region,location:region === "custom" ? value("location") : "",
+    seller:value("seller"),free_shipping:form.has("free_shipping"),include_shipping:form.has("include_shipping"),
     ...Object.fromEntries(Object.keys(extraFilterLabels).map(key => [key,form.has(key)])),
-    exclude_keywords:form.get("exclude_keywords").split(",").map(s => s.trim()).filter(Boolean),category_id:form.get("category_id"),attributes}};
+    exclude_keywords:value("exclude_keywords").split(",").map(s => s.trim()).filter(Boolean),category_id:value("category_id"),attributes}};
 }
 function updateLocation() {
   const selected = $('#watch-form input[name="location_region"]:checked');
   const custom = selected.value === "custom";
   $("#custom-location").hidden = !custom;
   $("#location").disabled = !custom; $("#location").required = custom;
-  $("#location-summary").textContent = selected.nextElementSibling.textContent;
+  $("#location-summary").textContent = selected.dataset.label;
 }
 function criteriaChanged() {
   if (!state.editing) return false;
@@ -281,7 +283,7 @@ function openWatch(watch = null) {
     Object.entries(watch.filters.attributes || {}).forEach(([k,v]) => addAttribute(k,v));
     $("#watch-advanced").open = Object.keys(watch.filters.attributes || {}).length > 0 || !!watch.filters.category_id;
   } else $("#watch-advanced").open = false;
-  $("#watch-location").open = true; updateLocation();
+  updateLocation();
   $("#watch-create-note").hidden = !!watch; updateChangeNotice(); $("#watch-dialog").showModal();
 }
 function showItem(id) {

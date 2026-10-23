@@ -1,4 +1,5 @@
 import pytest
+from bs4 import BeautifulSoup
 from sqlalchemy import select
 
 from app.db import SessionLocal
@@ -117,9 +118,36 @@ def test_page_and_static_assets(client):
     assert r.status_code == 200
     assert "Mira Tarel0chn1tsa" in r.text and '<html lang="en">' in r.text
     assert "script-src 'self'" in r.headers["content-security-policy"]
-    assert client.get("/static/app.js").status_code == 200
-    assert client.get("/static/style.css").status_code == 200
+    assert r.headers["cache-control"] == "no-cache"
+    soup = BeautifulSoup(r.text, "html.parser")
+    for url in (soup.select_one('link[rel="stylesheet"]')["href"], soup.select_one("script[src]")["src"]):
+        assert "?v=" in url
+        asset = client.get(url)
+        assert asset.status_code == 200 and asset.headers["cache-control"] == "no-cache"
     assert client.get("/api/health").json() == {"status":"ok"}
+
+
+def test_updated_assets_get_new_urls_even_without_a_server_restart(client, tmp_path, monkeypatch):
+    from app import main
+
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "style.css").write_text("css-v1")
+    (static / "app.js").write_text("js-v1")
+    monkeypatch.setattr(main, "ROOT", tmp_path)
+
+    def urls():
+        soup = BeautifulSoup(client.get("/").text, "html.parser")
+        return soup.select_one('link[rel="stylesheet"]')["href"], soup.select_one("script[src]")["src"]
+
+    initial_css, initial_js = urls()
+    assert urls() == (initial_css, initial_js)
+    (static / "app.js").write_text("js-v2")
+    css, js = urls()
+    assert css == initial_css and js != initial_js
+    (static / "style.css").write_text("css-v2")
+    updated_css, updated_js = urls()
+    assert updated_css != css and updated_js == js
 
 
 def test_old_system_errors_display_in_english_without_changing_user_content(client,auth):

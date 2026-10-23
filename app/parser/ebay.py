@@ -286,7 +286,7 @@ def parse_detail(html: str, listing: Listing) -> Listing:
 def build_search_url(query: str, filters: dict, page: int = 1) -> str:
     # Keep eBay's default page size. In a live comparison, adding _ipg=240
     # turned a successful search into HTTP 403 in the same Chromium session.
-    params = {"_nkw": query, "_sop": "10", "_pgn": str(page), "_dmd": "1",
+    params = {"_nkw": query, "_sop": "10", "_pgn": str(page), "_dmd": "1", "rt": "nc",
               "_curr": filters.get("currency", "USD")}
     if filters.get("min_price") is not None and not filters.get("include_shipping"):
         params["_udlo"] = str(filters["min_price"])
@@ -303,6 +303,9 @@ def build_search_url(query: str, filters: dict, page: int = 1) -> str:
         if filters.get(filter_name):
             params[parameter] = "1"
     region = filters.get("location_region", "default")
+    # Existing watches can have a country without the newer location_region field.
+    if filters.get("location") and region == "default":
+        region = "custom"
     if region in REGION_PARAMS:
         params["LH_PrefLoc"] = REGION_PARAMS[region]
     if filters.get("category_id"):
@@ -332,7 +335,7 @@ def matches_filters(item: Listing, filters: dict, *, native: bool = False) -> bo
     """None means a required value is absent; such a listing must never trigger a notification."""
     missing = False
     # These criteria are enforced by eBay's search, not inferred from incomplete card text.
-    regional = filters.get("location_region", "default") in REGION_PARAMS.keys() - {"worldwide"}
+    regional = filters.get("location_region", "default") in REGION_PARAMS.keys() - {"default", "worldwide"}
     if not native and (regional or any(filters.get(key) for key in NATIVE_BOOLEAN_FILTERS)):
         missing = True
     if any(value in item.availability.casefold() for value in ("outofstock", "soldout", "discontinued")):

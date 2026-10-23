@@ -99,6 +99,8 @@ async def check(url: str, output: Path):
         await context.route("**/api/**",api)
         await context.route("https://i.ebayimg.com/**",lambda route: route.fulfill(content_type="image/svg+xml",body='<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect width="180" height="180" fill="#f0f2eb"/><rect x="35" y="27" width="110" height="130" rx="12" fill="#c3c9bf" stroke="#798273" stroke-width="2"/><rect x="48" y="55" width="84" height="55" rx="5" fill="#4e5848"/><circle cx="70" cy="82" r="15" fill="#d3d8cb"/><circle cx="110" cy="82" r="15" fill="#d3d8cb"/><text x="90" y="139" text-anchor="middle" fill="#36452c" font-family="sans-serif" font-size="10">UI TEST FIXTURE</text></svg>'))
         await page.goto(url)
+        await expect(page.locator('link[rel="stylesheet"]')).to_have_attribute("href", re.compile(r"/static/style\.css\?v=[a-f0-9]+"))
+        await expect(page.locator('script[src]')).to_have_attribute("src", re.compile(r"/static/app\.js\?v=[a-f0-9]+"))
         await expect(page.locator("#login-dialog")).to_be_visible()
         await expect(page.locator(".login-guide")).to_be_visible()
         assert not re.search(r"[А-Яа-яІіЇїЄєҐґ]",await page.locator("body").inner_text())
@@ -180,15 +182,33 @@ async def check(url: str, output: Path):
         await page.locator("#new-watch").click()
         await expect(page.locator('[name="location_region"][value="default"]')).to_be_checked()
         await expect(page.locator("#custom-location")).not_to_be_visible()
+        # A disabled location is absent from FormData. Every region must still serialize safely.
+        for region in ("default", "us", "north_america", "europe", "asia", "worldwide"):
+            await page.locator(f'[name="location_region"][value="{region}"]').check()
+            payload = await page.evaluate("watchPayload()")
+            assert payload["filters"]["location_region"] == region
+            assert payload["filters"]["location"] == ""
+            assert await page.evaluate('new FormData(document.querySelector("#watch-form")).get("location")') is None
         await page.locator('[name="location_region"][value="custom"]').check()
         await expect(page.locator("#location")).to_be_visible()
-        await page.locator("#location").fill("Japan")
+        await page.locator("#location").fill(" Japan ")
+        assert (await page.evaluate("watchPayload()"))["filters"]["location"] == "Japan"
+        await page.locator("#watch-name").focus()
+        await page.locator("#location").evaluate("el => el.disabled = true")
+        assert (await page.evaluate("watchPayload()"))["filters"]["location"] == ""
+        await page.evaluate("updateLocation()")
+        # Native radio keyboard behavior remains available with the custom card design.
+        await page.locator('[name="location_region"][value="us"]').focus()
+        await page.keyboard.press("ArrowRight")
+        await expect(page.locator('[name="location_region"][value="north_america"]')).to_be_checked()
         await page.locator('[name="location_region"][value="europe"]').check()
         await expect(page.locator("#location")).to_be_disabled()
         await expect(page.locator("#location-summary")).to_have_text("Europe")
         for name in ("accepts_offers", "returns_accepted", "free_returns", "sale_items"):
             await page.locator(f'[name="{name}"]').check()
         await page.locator("#watch-location").scroll_into_view_if_needed()
+        assert await page.locator("#watch-location").evaluate("el => el.getBoundingClientRect().height < 480")
+        await page.locator("#watch-location").screenshot(path=str(output/"location-picker-desktop.png"))
         await page.screenshot(path=str(output/"search-filters-desktop.png"), full_page=True)
         await page.locator("#watch-query").fill("Fujifilm X100")
         await page.locator("#min-price").fill("100")
@@ -257,7 +277,11 @@ async def check(url: str, output: Path):
         await expect(page.locator("#location-summary")).to_have_text("Europe")
         await page.locator("#watch-location").scroll_into_view_if_needed()
         assert await page.locator("#watch-dialog").evaluate("el => el.scrollWidth <= el.clientWidth")
+        await page.locator("#watch-location").screenshot(path=str(output/"location-picker-mobile.png"))
         await page.screenshot(path=str(output/"search-mobile.png"),full_page=True)
+        await page.set_viewport_size({"width":320,"height":740})
+        assert await page.locator("#watch-dialog").evaluate("el => el.scrollWidth <= el.clientWidth")
+        await page.set_viewport_size({"width":390,"height":844})
         await page.locator('[data-close="watch-dialog"]').first.click()
         await page.locator("#logout").click()
         await expect(page.locator("#login-start-form")).to_be_visible()

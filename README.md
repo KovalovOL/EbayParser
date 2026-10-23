@@ -36,6 +36,7 @@ docker compose start
 - Продавець: `_sasl` / `_saslop`; виключені слова та фрази: `_ex_kw`.
 - Країна: `_salic` / `LH_LocatedIn`. Варіанти з публічної форми Advanced Search містяться в `app/ebay_filters.py`.
 - Регіон розташування товару: Default, US Only, North America, Europe, Asia або Worldwide через `LH_PrefLoc`. Для конкретної країни чи міста виберіть Specific country or location. Це місце розташування товару; можливість доставки залежить від продавця.
+  Мапінг звірено з живими посиланнями видачі ebay.com 23.10.2026: Default=`98`, US Only=`3`, North America=`4`, Europe=`5`, Asia=`6`; Worldwide=`2` — із форми Advanced Search. Стара форма Advanced Search усе ще генерує інші значення US Only/North America, тому вони не використовуються. Знімок посилань зберігається в `tests/fixtures/ebay-location-links.json`.
 - Приймання пропозицій ціни: `LH_BO`; повернення: `LH_RPA`; безкоштовне повернення: `LH_FR`; акційні товари: `LH_SaleItems`. Ці умови застосовує eBay у пошуку; застосунок не вгадує їх із тексту картки.
 - Характеристики: нативні параметри eBay, наприклад `Brand=Sony`, з категорією `_dcat`. Потрібні точні назви й значення фільтрів eBay та ID категорії.
 

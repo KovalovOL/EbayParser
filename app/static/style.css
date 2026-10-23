@@ -170,19 +170,30 @@ button.full,a.full {width:100%;margin-top:15px}
 .form-section-label {font-size:13px;color:#536047;padding:20px 0 0;margin:24px 0 18px;border-top:1px solid var(--line);font-weight:600}
 .checkbox-row {display:flex;gap:22px;flex-wrap:wrap;margin:20px 0}
 .checkbox-row label {display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);font-weight:400;margin:0;min-height:28px}
-.location-section {border-top:1px solid var(--line);padding:16px 0 0;margin-top:24px}
-.location-section summary {display:flex;align-items:center;gap:12px;list-style:none;font-size:15px;font-weight:600;color:var(--ink);padding:6px 0}
-.location-section summary::-webkit-details-marker {display:none}
-.location-section summary::after {content:"⌄";margin-left:auto;font-size:22px;line-height:1}
-.location-section[open] summary::after {content:"⌃"}
-.location-section summary span {font-size:11px;color:var(--muted);font-weight:400}
-.region-options {display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;border:0;padding:0;margin:14px 0 0;min-width:0}
-.region-option {display:flex;align-items:center;gap:10px;padding:10px 12px;min-height:44px;margin:0;border:1px solid transparent;border-radius:8px;cursor:pointer;font-size:13px;font-weight:400}
-.region-option:hover {background:#f4f7ed}
-.region-option:has(input:checked) {background:#f0f5e4;border-color:#bdce98;color:#3d5520}
-.region-option input {appearance:auto;width:20px;height:20px;flex-shrink:0;accent-color:var(--green);margin:0}
+.location-section {border:1px solid var(--line);border-radius:12px;padding:18px;margin-top:24px;background:#fafbf7}
+.location-heading {display:flex;align-items:center;justify-content:space-between;gap:12px}
+.location-heading h3 {font-size:14px;margin:0;color:var(--ink)}
+.location-heading>span {font-size:11px;font-weight:550;color:#49642b;background:#eaf1dc;border-radius:20px;padding:5px 10px}
+.location-section .field-help {margin-top:7px}
+.region-options {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;border:0;padding:0;margin:16px 0 0;min-width:0}
+.region-option {position:relative;display:block;margin:0;min-width:0;cursor:pointer}
+.region-option input {position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;z-index:1}
+.region-card {display:flex;align-items:flex-start;gap:9px;min-height:82px;height:100%;padding:13px 11px;border:1px solid #dde4d4;border-radius:9px;background:#fff;transition:background .15s,border-color .15s}
+.region-option:hover .region-card {border-color:#a8ba88;background:#f7faef}
+.region-option input:checked+.region-card {background:#edf5db;border-color:#8fa85e}
+.region-option input:focus-visible+.region-card {outline:2px solid var(--green);outline-offset:3px}
+.region-marker {display:flex;align-items:center;justify-content:center;width:18px;height:18px;flex-shrink:0;border:1.5px solid #bac4ad;border-radius:50%;margin-top:1px;color:#fff}
+.region-marker svg {opacity:0}
+.region-option input:checked+.region-card .region-marker {background:var(--green);border-color:var(--green)}
+.region-option input:checked+.region-card svg {opacity:1}
+.region-copy {min-width:0}
+.region-copy strong {display:block;font-size:12px;font-weight:600;line-height:1.5;color:#36452d}
+.region-copy small {display:block;font-size:10px;font-weight:400;line-height:1.6;color:var(--muted);margin-top:4px}
 .region-custom {grid-column:1/-1}
-.custom-location {margin:16px 0 4px}
+.region-custom .region-card {min-height:60px;align-items:center}
+.region-custom .region-marker {margin-top:0}
+.custom-location {margin:12px 0 0;padding:14px;background:#f0f5e7;border-radius:8px}
+.location-note {font-size:10px;color:var(--muted);margin:12px 0 0;line-height:1.6}
 .extra-filters {display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .extra-filters label {display:flex;align-items:flex-start;gap:10px;padding:13px;border:1px solid var(--line);border-radius:8px;margin:0;cursor:pointer;font-size:12px;font-weight:500}
 .extra-filters label:has(input:checked) {background:#f0f5e4;border-color:#bdce98}
@@ -284,6 +295,9 @@ summary {font-size:13px;cursor:pointer;color:#526d24;line-height:1.8;padding:3px
   .login-guide li {margin-bottom:20px}
   .guide-note {padding-top:15px}
   .watch-dialog form {padding:24px 20px}
+  .location-section {padding:14px}
+  .region-options {grid-template-columns:repeat(2,minmax(0,1fr))}
+  .region-card {min-height:80px;padding:12px 9px;gap:8px}
   .form-grid {gap:14px}
   .form-grid.three {grid-template-columns:1fr 1fr}
   .form-grid.three>.field:last-child {grid-column:1/-1}

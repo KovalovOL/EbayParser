@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -143,26 +144,40 @@ def test_native_ebay_filters_include_seller_country_exclusions_and_item_specific
     assert unquote(query["Storage%20Capacity"][0]) == "1 TB"
 
 
-@pytest.mark.parametrize("region, value", [
-    ("us", "1"), ("north_america", "3"), ("europe", "5"), ("asia", "6"), ("worldwide", "2"),
-])
-def test_item_regions_use_marketplace_location_preferences(region, value):
-    filters = Filters(location_region=region).model_dump()
+@pytest.mark.parametrize("native_filter", json.loads((FIXTURES / "ebay-location-links.json").read_text())["regions"],
+                         ids=lambda entry: entry["key"])
+def test_item_regions_match_live_ebay_filter_links(native_filter):
+    filters = Filters(location_region=native_filter["key"]).model_dump()
     query = parse_qs(urlparse(build_search_url("Sony", filters)).query)
-    assert query["LH_PrefLoc"] == [value]
+    native_query = parse_qs(urlparse(native_filter["url"]).query)
+    assert query["LH_PrefLoc"] == native_query["LH_PrefLoc"]
+    assert query["rt"] == ["nc"]
     assert "_salic" not in query and "LH_LocatedIn" not in query
     # A search card does not need to expose regional metadata to use eBay's filter.
     assert matches_filters(Listing("1", "", "Sony", currency="USD"), filters, native=True) is True
 
 
-def test_default_and_specific_locations_do_not_send_a_regional_preference():
+def test_default_resets_the_location_preference_and_countries_use_located_in():
     query = parse_qs(urlparse(build_search_url("Sony", Filters().model_dump())).query)
-    assert "LH_PrefLoc" not in query and "_salic" not in query
+    assert query["LH_PrefLoc"] == ["98"] and "_salic" not in query
     filters = Filters(location=" Japan ").model_dump()
     assert filters["location_region"] == "custom"
     query = parse_qs(urlparse(build_search_url("Sony", filters)).query)
     assert query["_salic"] == ["104"] and query["LH_LocatedIn"] == ["1"]
     assert "LH_PrefLoc" not in query
+
+
+def test_legacy_country_is_not_overridden_by_default_region():
+    query = parse_qs(urlparse(build_search_url("Sony", {"location":"Japan"})).query)
+    assert query["_salic"] == ["104"] and query["LH_LocatedIn"] == ["1"]
+    assert "LH_PrefLoc" not in query
+
+
+@pytest.mark.parametrize("currency_code", ["USD", "EUR", "GBP", "CAD", "AUD"])
+def test_currency_does_not_change_native_location_filter(currency_code):
+    filters = Filters(location_region="europe", currency=currency_code).model_dump()
+    query = parse_qs(urlparse(build_search_url("Sony", filters)).query)
+    assert query["LH_PrefLoc"] == ["5"] and query["_curr"] == [currency_code]
 
 
 def test_offer_return_and_sale_filters_are_enforced_by_native_search():
