@@ -320,3 +320,15 @@ summary {font-size:13px;cursor:pointer;color:#526d24;line-height:1.8;padding:3px
 @media(prefers-reduced-motion:reduce) {
   * {transition:none!important;scroll-behavior:auto!important}
 }
+
+.platform-picker,.platform-budget,.ebay-options {border:0;padding:0;margin:20px 0;min-width:0}
+.platform-picker legend,.platform-budget legend {font-size:13px;font-weight:600;color:var(--ink);padding:0 0 10px}
+.platform-options {grid-template-columns:repeat(3,minmax(0,1fr))}
+.platform-budget {padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#fafbf7}
+.platform-budget .form-grid {margin:0}
+.platform-budget .field-help {margin-top:6px}
+.platform-status {display:flex;flex-wrap:wrap;gap:6px 14px;margin:12px 0 0;font-size:11px;color:var(--muted)}
+@media(max-width:520px) {
+  .platform-options {grid-template-columns:1fr;gap:6px}
+  .platform-options label {padding:10px}
+}

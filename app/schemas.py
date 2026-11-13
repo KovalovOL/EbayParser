@@ -4,6 +4,9 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+from app.platforms import MARKET_CURRENCIES, PLATFORM_NAMES, Platform
+
+
 class LoginStart(BaseModel):
     username: str
 
@@ -70,11 +73,33 @@ class Filters(BaseModel):
         return self
 
 
+class MarketBudget(BaseModel):
+    min_price: int | None = Field(default=None, ge=0, le=100_000_000)
+    max_price: int | None = Field(default=None, ge=0, le=100_000_000)
+
+    @model_validator(mode="after")
+    def ordered_prices(self):
+        if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
+            raise ValueError("Minimum price cannot be higher than maximum price.")
+        return self
+
+
 class WatchInput(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     query: str = Field(min_length=1, max_length=200)
     filters: Filters = Field(default_factory=Filters)
     interval_seconds: int = Field(default=300, ge=60, le=86400)
+    platforms: list[Platform] = Field(default_factory=lambda: ["ebay"], min_length=1, max_length=3)
+    market_filters: dict[Literal["buyee", "kleinanzeigen"], MarketBudget] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_platforms(self):
+        if len(set(self.platforms)) != len(self.platforms):
+            raise ValueError("Select each platform only once.")
+        self.platforms = [key for key in PLATFORM_NAMES if key in self.platforms]
+        self.market_filters = {key: self.market_filters.get(key, MarketBudget())
+                               for key in self.platforms if key in MARKET_CURRENCIES}
+        return self
 
     @field_validator("name", "query")
     @classmethod

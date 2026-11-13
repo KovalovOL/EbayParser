@@ -5,6 +5,7 @@ import logging
 import httpx
 
 from app.config import get_settings
+from app.platforms import PLATFORM_NAMES
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -49,11 +50,12 @@ def item_message(watch_name: str, data: dict) -> str:
     esc = lambda value: html.escape(str(value or ""))
     price = data.get("price_text") or f'{data.get("price", "—")} {data.get("currency", "")}'
     attrs = list(data.get("attributes", {}).items())[:6]
-    lines = ["🔔 <b>New eBay match</b>", "", f'<b>{esc(data.get("title", "")[:300])}</b>',
+    platform = PLATFORM_NAMES.get(data.get("platform"), "eBay")
+    lines = [f"🔔 <b>New {platform} match</b>", "", f'<b>{esc(data.get("title", "")[:300])}</b>',
              f'💰 {esc(price)}', f'🚚 {esc(data.get("shipping_text") or "Shipping not specified")}',
              f'📍 {esc(data.get("location") or "Location not specified")}',
              f'Condition: {esc(data.get("condition"))}', f'Search: {esc(watch_name)}']
     lines += [f"{esc(k)[:100]}: {esc(str(v)[:200])}" for k, v in attrs]
-    lines += ["", f'<a href="{esc(data["url"])}">View on eBay ↗</a>']
+    lines += ["", f'<a href="{esc(data["url"])}">View on {platform} ↗</a>']
     return "\n".join(lines)
 

@@ -8,8 +8,31 @@ const state = {token:null, refreshPromise:null, refreshTimer:null, user:null, wa
 const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const date = value => value ? new Date(value * 1000).toLocaleString("en-GB", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "Not checked yet";
 const money = item => item.price_text || (item.price != null ? `${item.price} ${item.currency || ""}` : "Price not specified");
-const imageURL = value => {try {const u = new URL(value); return u.protocol === "https:" && (u.hostname === "i.ebayimg.com" || u.hostname.endsWith(".ebayimg.com")) ? u.href : "";} catch {return "";}};
-const itemURL = value => {try {const u = new URL(value); return u.protocol === "https:" && u.hostname === "www.ebay.com" && /^\/itm\/\d+$/.test(u.pathname) ? u.href : "#";} catch {return "#";}};
+const platformNames = {ebay:"eBay",buyee:"Buyee",kleinanzeigen:"Kleinanzeigen"};
+const marketCurrencies = {buyee:"JPY",kleinanzeigen:"EUR"};
+const platformsOf = watch => watch.platforms || ["ebay"];
+const platformName = item => platformNames[item.platform] || "eBay";
+const isHttps = u => u.protocol === "https:" && !u.username && !u.password && !u.port;
+const imageURL = value => {try {
+  const u = new URL(value);
+  return isHttps(u) && /\.(ebayimg\.com|buyee\.jp|kleinanzeigen\.de)$/.test(u.hostname) ? u.href : "";
+} catch {return "";}};
+function itemURL(value) {
+  try {
+    const u = new URL(value);
+    const patterns = {"www.ebay.com":/^\/itm\/\d+$/, "buyee.jp":/^\/(item\/jdirectitems\/auction|paypayfleamarket\/item)\/[a-z]\d+$/,
+      "www.kleinanzeigen.de":/^\/s-anzeige\/[^/]+\/\d+-\d+-\d+$/};
+    return isHttps(u) && patterns[u.hostname]?.test(u.pathname) ? u.href : "#";
+  } catch {return "#";}
+}
+function searchURL(value, platform) {
+  try {
+    const u = new URL(value);
+    const hosts = {ebay:"www.ebay.com",buyee:"buyee.jp",kleinanzeigen:"www.kleinanzeigen.de"};
+    const paths = {ebay:/^\/sch\//,buyee:/^\/item\/search(?:\/|$)/,kleinanzeigen:/^\/s-/};
+    return isHttps(u) && u.hostname === hosts[platform] && paths[platform].test(u.pathname) ? u.href : "";
+  } catch {return "";}
+}
 const conditionLabels = {new:"New",used:"Used",refurbished:"Refurbished",parts:"For parts"};
 const regionLabels = {us:"US Only",north_america:"North America",europe:"Europe",asia:"Asia",worldwide:"Worldwide"};
 const extraFilterLabels = {accepts_offers:"Accepts offers",returns_accepted:"Returns accepted",free_returns:"Free returns",sale_items:"Sale items"};
@@ -100,7 +123,9 @@ function showLogin() {
 function empty(title,description,action = "") {
   return `<div class="empty-state"><h3>${escape(title)}</h3><p>${escape(description)}</p>${action}</div>`;
 }
-function watchStatus(w) {return !w.active ? "Paused" : state.monitoring?.state === "restricted" ? "eBay paused" : w.error ? "Retry scheduled" : !w.initialized ? "Creating initial snapshot" : "Monitoring";}
+const ebayPause = w => platformsOf(w).length === 1 && platformsOf(w)[0] === "ebay"
+  ? state.monitoring?.ebay_retry_at || (state.monitoring?.state === "restricted" ? state.monitoring.retry_at : null) : null;
+function watchStatus(w) {return !w.active ? "Paused" : ebayPause(w) ? "eBay paused" : w.error ? "Retry scheduled" : !w.initialized ? "Creating initial snapshot" : "Monitoring";}
 function renderWatches() {
   $("#watch-count").textContent = state.watches.length;
   $("#stat-active").textContent = state.watches.filter(w => w.active).length;
@@ -118,7 +143,7 @@ function renderWatches() {
   $("#overview-stats").hidden = !!w;
   if (!w) return;
   const f = w.filters;
-  const tags = [f.min_price != null || f.max_price != null ? `${f.min_price ?? 0} – ${f.max_price ?? "any"} ${f.currency}` : f.currency,
+  const ebayTags = [f.min_price != null || f.max_price != null ? `${f.min_price ?? 0} – ${f.max_price ?? "any"} ${f.currency}` : f.currency,
     regionLabels[f.location_region] && `Location: ${regionLabels[f.location_region]}`,
     f.location && `Location: ${f.location}`,f.seller && `Seller: ${f.seller}`,conditionLabels[f.condition],
     f.buying_format !== "any" && (f.buying_format === "auction" ? "Auction" : "Buy It Now"),
@@ -126,12 +151,30 @@ function renderWatches() {
     ...Object.entries(extraFilterLabels).filter(([key]) => f[key]).map(([,label]) => label),
     ...(f.exclude_keywords || []).map(v => `Exclude: ${v}`),...Object.entries(f.attributes || {}).map(([k,v]) => `${k}: ${v}`),
     f.category_id && `Category: ${f.category_id}`].filter(Boolean);
-  const blocked = state.monitoring?.state === "restricted";
-  const nextAttempt = blocked && w.error ? state.monitoring.retry_at : Math.max(w.next_check_at, blocked ? state.monitoring.retry_at : 0);
+  const platforms = platformsOf(w);
+  const tags = platforms.includes("ebay") ? ebayTags : [];
+  for (const [key,currency] of Object.entries(marketCurrencies)) {
+    const budget = w.market_filters?.[key];
+    if (platforms.includes(key) && (budget?.min_price != null || budget?.max_price != null))
+      tags.push(`${platformNames[key]}: ${budget.min_price ?? 0} – ${budget.max_price ?? "any"} ${currency}`);
+  }
+  const sourceStatus = platforms.map(key => {
+    const source = w.platform_state?.[key];
+    const url = searchURL(w.search_urls?.[key] || source?.search_url || (platforms.length === 1 ? w.search_url : ""),key);
+    const title = platformNames[key];
+    const link = url ? `<a class="item-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">${title} ↗</a>` : title;
+    const retry = key === "ebay" && state.monitoring?.ebay_retry_at;
+    const status = !w.active ? "Paused" : retry ? `Retry ${date(retry)}` : source?.error
+      ? `Retry ${date(source.next_check_at)}` : (source?.initialized || (!source && w.initialized)) ? "Active" : "Awaiting first check";
+    return `<span>${link} · ${status}</span>`;
+  }).join("");
+  const retryAt = ebayPause(w);
+  const blocked = Boolean(retryAt);
+  const nextAttempt = blocked && w.error ? retryAt : Math.max(w.next_check_at, retryAt || 0);
   const queued = w.active && !blocked && nextAttempt <= Date.now()/1000;
   const checkDisabled = !w.active || blocked || queued || (w.last_checked_at && Date.now()/1000 - w.last_checked_at < 60);
   const interval = w.interval_seconds >= 3600 ? `${w.interval_seconds/3600} hr` : `${w.interval_seconds/60} min`;
-  setHTML($("#selected-watch"),`<div class="selected-watch-top"><div><h3>${watchStatus(w)}</h3><div class="watch-meta">Every ${interval} · Last check: ${date(w.last_checked_at)}${w.active ? `<br>${blocked ? `Retries resume: ${date(state.monitoring.retry_at)}${nextAttempt > state.monitoring.retry_at + 1 ? `<br>Scheduled check: ${date(nextAttempt)}` : ""}` : queued ? "Next check: queued or in progress" : `Next attempt: ${date(nextAttempt)}`}` : ""}</div></div><div class="watch-actions"><button class="button subtle" data-action="check" data-focus="check" ${checkDisabled ? "disabled" : ""} title="${blocked ? `eBay requests paused until ${date(state.monitoring.retry_at)}` : queued ? "Already queued or in progress" : "Request a check (once per minute)"}">${queued ? "Check queued" : "Check now"}</button><button class="button subtle" data-action="toggle" data-focus="toggle">${w.active ? "Pause" : "Resume"}</button><button class="button subtle" data-action="edit" data-focus="edit">Edit</button><button class="button subtle danger" data-action="delete" data-focus="delete">Delete</button></div></div><div class="filter-tags">${tags.map(t => `<span class="tag">${escape(t)}</span>`).join("")}</div>${!w.active ? '<p class="watch-meta pause-note">Checks and pending alerts are paused. Saved results stay available. Resuming saves a new snapshot; listings added while paused will not trigger alerts.</p>' : !w.initialized ? '<p class="watch-meta pause-note">The first successful check saves existing listings without alerts.</p>' : ""}${w.counts.pending ? `<p class="watch-meta">${w.counts.pending} item${w.counts.pending === 1 ? " is" : "s are"} cannot be confirmed from the information on the search cards.</p>` : ""}${w.error ? `<div class="watch-error">${escape(w.error)}${w.active ? " Saved results remain available; retries are automatic." : ""}</div>` : ""}`);
+  setHTML($("#selected-watch"),`<div class="selected-watch-top"><div><h3>${watchStatus(w)}</h3><div class="watch-meta">Every ${interval} · Last check: ${date(w.last_checked_at)}${w.active ? `<br>${blocked ? `Retries resume: ${date(retryAt)}${nextAttempt > retryAt + 1 ? `<br>Scheduled check: ${date(nextAttempt)}` : ""}` : queued ? "Next check: queued or in progress" : `Next attempt: ${date(nextAttempt)}`}` : ""}</div></div><div class="watch-actions"><button class="button subtle" data-action="check" data-focus="check" ${checkDisabled ? "disabled" : ""} title="${blocked ? `eBay requests paused until ${date(retryAt)}` : queued ? "Already queued or in progress" : "Request a check (once per minute)"}">${queued ? "Check queued" : "Check now"}</button><button class="button subtle" data-action="toggle" data-focus="toggle">${w.active ? "Pause" : "Resume"}</button><button class="button subtle" data-action="edit" data-focus="edit">Edit</button><button class="button subtle danger" data-action="delete" data-focus="delete">Delete</button></div></div><div class="platform-status">${sourceStatus}</div><div class="filter-tags">${tags.map(t => `<span class="tag">${escape(t)}</span>`).join("")}</div>${!w.active ? '<p class="watch-meta pause-note">Checks and pending alerts are paused. Saved results stay available. Resuming saves a new snapshot; listings added while paused will not trigger alerts.</p>' : !w.initialized ? '<p class="watch-meta pause-note">The first successful check on each platform saves existing listings without alerts.</p>' : ""}${w.counts.pending ? `<p class="watch-meta">${w.counts.pending} item${w.counts.pending === 1 ? " is" : "s are"} cannot be confirmed from the information on the search cards.</p>` : ""}${w.error ? `<div class="watch-error">${escape(w.error)}${w.active ? " Saved results remain available; retries are automatic." : ""}</div>` : ""}`);
 }
 function renderItems() {
   $("#items-count").textContent = state.watches.filter(w => state.selected === null || w.id === state.selected).reduce((sum,w) => sum + (w.counts.total || 0),0);
@@ -144,16 +187,16 @@ function renderItems() {
     const pending = (w ? [w] : state.watches).reduce((sum,x) => sum + (x.counts.pending || 0),0);
     const action = failed.length && !w ? `<div class="empty-actions">${failed.map(x => `<button class="button subtle" data-select-watch="${x.id}">View ${escape(x.name)} status</button>`).join("")}</div>` : "";
     $("#results").innerHTML = !state.user ? empty("Sign in to view your searches","Use Telegram to access your saved searches and listings.")
-      : !state.watches.length ? empty("Add your first search","Enter eBay keywords, then set any price, location or item filters you need.",'<button class="button primary" data-new-watch>＋ Add search</button>')
-      : state.onlyNew ? empty("No new matches yet","This view includes title, price and location combinations first seen after the initial snapshot.",'<button class="button subtle" data-show-all>View all listings</button>')
-      : empty(w?.error || failed.length ? "Waiting for a successful check" : w && !w.active ? "Search paused" : pending ? "Filter information unavailable" : (w ? w.initialized : state.watches.every(x => x.initialized)) ? "No matching listings" : "Creating the initial snapshot",w && !w.active ? "Resume the search to check eBay. Listings added while paused will be saved without alerts." : pending ? `${pending} items lack information needed to confirm your local filters. Simplify those filters or inspect the listings on eBay.` : w?.error || failed.length ? "eBay or the monitoring service could not complete a check. Open a search's status for the error and next attempt." : "Results appear after a successful check. If this search stays empty, try broader keywords or fewer filters.",action);
+      : !state.watches.length ? empty("Add your first search","Enter keywords, choose your platforms, then set your filters.",'<button class="button primary" data-new-watch>＋ Add search</button>')
+      : state.onlyNew ? empty("No new matches yet","This view includes platform, title, price and location combinations first seen after the initial snapshot.",'<button class="button subtle" data-show-all>View all listings</button>')
+      : empty(w?.error || failed.length ? "Waiting for a successful check" : w && !w.active ? "Search paused" : pending ? "Filter information unavailable" : (w ? w.initialized : state.watches.every(x => x.initialized)) ? "No matching listings" : "Creating the initial snapshot",w && !w.active ? "Resume the search to check the selected platforms. Listings added while paused will be saved without alerts." : pending ? `${pending} items lack information needed to confirm your local filters. Simplify those filters or inspect the listings on the marketplace.` : w?.error || failed.length ? "A marketplace check could not complete. Open a search's status for the error and next attempt." : "Results appear after a successful check. If this search stays empty, try broader keywords or fewer filters.",action);
     return;
   }
   setHTML($("#results"),`<div class="item-list">${state.items.map(item => {
     const image = imageURL(item.image_url);
     const status = item.baseline ? "Initial snapshot" : item.is_new ? "New match" : "Already seen";
     const reason = item.baseline ? "Saved in the initial snapshot. No Telegram alert." : item.is_new ? "This title, price and location combination was first seen after the initial snapshot." : "This title, price and location combination has already been seen for your account.";
-    return `<article class="item-row">${image ? `<img class="item-image" src="${escape(image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<div class="item-image image-placeholder" aria-label="No item image">No image</div>'}<div class="item-content"><div class="item-labels"><span class="status-tag ${item.is_new ? "fresh" : ""}" title="${reason}">${status}</span><button class="text-button item-watch" data-select-watch="${item.watch_id}" data-focus="item-watch-${item.id}">${escape(item.watch_name)}</button></div><button class="item-title" data-item="${item.id}" data-focus="item-${item.id}">${escape(item.title)}</button><div class="item-meta"><span>${escape(item.condition || "Condition not specified")}</span><span>${escape(item.location || "Location not specified")}</span></div>${item.notification_error ? '<span class="notification-warning">Telegram delivery will retry</span>' : item.is_new ? `<span class="notification-status">${item.notification_sent ? "Telegram alert sent" : item.notification_pending ? "Telegram alert queued" : "No pending Telegram alert"}</span>` : ""}</div><div class="item-right"><div class="item-price">${escape(money(item))}</div><div class="item-shipping">${escape(item.shipping_text || "Shipping not specified")}</div><a class="item-link" href="${escape(itemURL(item.url))}" data-focus="ebay-${item.id}" target="_blank" rel="noopener noreferrer">View on eBay ↗</a></div></article>`;
+    return `<article class="item-row">${image ? `<img class="item-image" src="${escape(image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<div class="item-image image-placeholder" aria-label="No item image">No image</div>'}<div class="item-content"><div class="item-labels"><span class="tag">${platformName(item)}</span><span class="status-tag ${item.is_new ? "fresh" : ""}" title="${reason}">${status}</span><button class="text-button item-watch" data-select-watch="${item.watch_id}" data-focus="item-watch-${item.id}">${escape(item.watch_name)}</button></div><button class="item-title" data-item="${item.id}" data-focus="item-${item.id}">${escape(item.title)}</button><div class="item-meta"><span>${escape(item.condition || "Condition not specified")}</span><span>${escape(item.location || "Location not specified")}</span></div>${item.notification_error ? '<span class="notification-warning">Telegram delivery will retry</span>' : item.is_new ? `<span class="notification-status">${item.notification_sent ? "Telegram alert sent" : item.notification_pending ? "Telegram alert queued" : "No pending Telegram alert"}</span>` : ""}</div><div class="item-right"><div class="item-price">${escape(money(item))}</div><div class="item-shipping">${escape(item.shipping_text || "Shipping not specified")}</div><a class="item-link" href="${escape(itemURL(item.url))}" data-focus="ebay-${item.id}" target="_blank" rel="noopener noreferrer">View on ${platformName(item)} ↗</a></div></article>`;
   }).join("")}</div>`);
 }
 function connectionError(message) {
@@ -164,8 +207,8 @@ function connectionError(message) {
 }
 function renderMonitoring(status) {
   const m = status.monitoring || {state:"offline"};
-  const browser = {chromium:"Chromium",firefox:"Firefox"}[m.browser];
-  const labels = {monitoring:"Monitoring",checking:`Checking eBay${browser ? ` · ${browser}` : "…"}`,restricted:`eBay paused until ${date(m.retry_at)}`,
+  const browser = !m.checking_platform || m.checking_platform === "eBay" ? {chromium:"Chromium",firefox:"Firefox"}[m.browser] : null;
+  const labels = {monitoring:"Monitoring",checking:`Checking ${m.checking_platform || "eBay"}${browser ? ` · ${browser}` : "…"}`,restricted:`eBay paused until ${date(m.retry_at)}`,
     paused:"All searches paused",no_searches:"No saved searches",offline:"Monitoring worker offline",
     error:"Monitoring error",retrying:"Searches waiting to retry"};
   const details = [];
@@ -177,6 +220,7 @@ function renderMonitoring(status) {
   else if (m.state === "offline") details.push("Checks will resume when the worker reconnects");
   else if (m.state === "error") details.push(m.error || "The worker will retry automatically");
   if (["monitoring","checking"].includes(m.state) && m.failed_searches) details.push(`${m.failed_searches} ${m.failed_searches === 1 ? "search" : "searches"} waiting to retry`);
+  if (m.ebay_retry_at && m.state !== "restricted") details.push(`eBay paused until ${date(m.ebay_retry_at)}`);
   const bot = status.services.bot;
   if (!bot?.online) details.push("Telegram bot offline");
   else if (bot.error) details.push("Telegram bot needs attention");
@@ -232,19 +276,30 @@ function watchPayload() {
   const form = new FormData($("#watch-form")); const attributes = {};
   // Disabled controls are omitted from FormData, so optional fields may be absent.
   const value = name => String(form.get(name) ?? "").trim();
-  for (const row of $("#attribute-rows").children) {
+  const platforms = form.getAll("platforms");
+  for (const row of platforms.includes("ebay") ? $("#attribute-rows").children : []) {
     const [k,v] = row.querySelectorAll("input"); const key = k.value.trim();
     if (!key || !v.value.trim()) throw new Error("Enter a name and value for each attribute, or remove the empty row.");
     if (Object.keys(attributes).some(x => x.toLowerCase() === key.toLowerCase())) throw new Error(`The attribute “${key}” is listed twice. Keep one value per attribute.`);
     attributes[key] = v.value.trim();
   }
   const query = value("query"); const region = value("location_region") || "default";
-  return {name:value("name") || query.slice(0,100),query,interval_seconds:Number(value("interval_seconds")),filters:{
+  const price = name => value(name) === "" ? null : Number(value(name));
+  const market_filters = Object.fromEntries(platforms.filter(key => key in marketCurrencies).map(key => [key,{
+    min_price:price(`${key}_min_price`),max_price:price(`${key}_max_price`)}]));
+  return {name:value("name") || query.slice(0,100),query,platforms,market_filters,
+    interval_seconds:Number(value("interval_seconds")),filters:platforms.includes("ebay") ? {
     min_price:value("min_price") === "" ? null : Number(value("min_price")),max_price:value("max_price") === "" ? null : Number(value("max_price")),currency:value("currency"),condition:value("condition"),buying_format:value("buying_format"),
     location_region:region,location:region === "custom" ? value("location") : "",
     seller:value("seller"),free_shipping:form.has("free_shipping"),include_shipping:form.has("include_shipping"),
     ...Object.fromEntries(Object.keys(extraFilterLabels).map(key => [key,form.has(key)])),
-    exclude_keywords:value("exclude_keywords").split(",").map(s => s.trim()).filter(Boolean),category_id:value("category_id"),attributes}};
+    exclude_keywords:value("exclude_keywords").split(",").map(s => s.trim()).filter(Boolean),category_id:value("category_id"),attributes} : {}};
+}
+function updatePlatformOptions() {
+  for (const input of document.querySelectorAll('#watch-form input[name="platforms"]')) {
+    const panel = $(`#${input.value}-options`);
+    panel.hidden = panel.disabled = !input.checked;
+  }
 }
 function updateLocation() {
   const selected = $('#watch-form input[name="location_region"]:checked');
@@ -257,7 +312,13 @@ function criteriaChanged() {
   if (!state.editing) return false;
   const original = state.watches.find(w => w.id === state.editing); if (!original) return false;
   const canonical = value => value && typeof value === "object" ? Array.isArray(value) ? value.map(canonical) : Object.fromEntries(Object.keys(value).sort().map(k => [k,canonical(value[k])])) : value;
-  try {const body = watchPayload(); return body.query !== original.query || JSON.stringify(canonical(body.filters)) !== JSON.stringify(canonical(normalizedFilters(original.filters)));}
+  try {
+    const body = watchPayload();
+    const equal = (a,b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+    return body.query !== original.query || !equal(body.platforms,platformsOf(original)) ||
+      !equal(body.market_filters,original.market_filters || {}) ||
+      (body.platforms.includes("ebay") && !equal(body.filters,normalizedFilters(original.filters)));
+  }
   catch {return true;}
 }
 function updateChangeNotice() {
@@ -270,6 +331,11 @@ function openWatch(watch = null) {
   const form = $("#watch-form"); form.reset(); $("#attribute-rows").replaceChildren();
   showError("#watch-error",""); $("#watch-dialog-title").textContent = watch ? "Edit search" : "Add search";
   if (watch) {
+    for (const input of form.querySelectorAll('input[name="platforms"]'))
+      input.checked = platformsOf(watch).includes(input.value);
+    for (const [key,budget] of Object.entries(watch.market_filters || {}))
+      for (const name of ["min_price","max_price"])
+        form.elements.namedItem(`${key}_${name}`).value = budget[name] ?? "";
     for (const [key,value] of Object.entries({name:watch.name,query:watch.query,interval_seconds:watch.interval_seconds,...normalizedFilters(watch.filters)})) {
       const input = form.elements.namedItem(key); if (!input || key === "attributes") continue;
       if (input.type === "checkbox") input.checked = value;
@@ -283,7 +349,7 @@ function openWatch(watch = null) {
     Object.entries(watch.filters.attributes || {}).forEach(([k,v]) => addAttribute(k,v));
     $("#watch-advanced").open = Object.keys(watch.filters.attributes || {}).length > 0 || !!watch.filters.category_id;
   } else $("#watch-advanced").open = false;
-  updateLocation();
+  updatePlatformOptions(); updateLocation();
   $("#watch-create-note").hidden = !!watch; updateChangeNotice(); $("#watch-dialog").showModal();
 }
 function showItem(id) {
@@ -295,10 +361,10 @@ function showItem(id) {
   state.openItem = id; state.detailVersion = version;
   const image = imageURL(item.image_url);
   const attrs = {"Condition":item.condition,"Location":item.location,"Seller":item.seller,"Shipping":item.shipping_text,
-    "eBay item ID":item.ebay_id,"Search":item.watch_name,"First found":date(item.first_seen_at),"Last seen":date(item.last_seen_at),
-    "Notification identity":"Title + price + location, shared across your searches",
+    "Platform":platformName(item),"Listing ID":item.ebay_id?.split(":").pop(),"Search":item.watch_name,"First found":date(item.first_seen_at),"Last seen":date(item.last_seen_at),
+    "Notification identity":"Platform + title + price + location, shared across your searches",
     "Telegram alert":item.notification_sent ? "Sent" : item.notification_error || (item.notification_pending ? "Queued for delivery" : item.baseline ? "Not sent: initial snapshot" : item.is_new ? "No pending alert (the search may have been paused)" : "Not sent: combination already seen"),...item.attributes};
-  setHTML($("#item-detail"),`<div class="dialog-heading"><h2 id="item-detail-title">Item details</h2><button class="icon-button" data-close="item-dialog" data-focus="item-close" aria-label="Close item details">×</button></div><div class="item-detail-top">${image ? `<img class="detail-image" src="${escape(image)}" alt="" referrerpolicy="no-referrer">` : ""}<div><h3 class="detail-title">${escape(item.title)}</h3><div class="detail-price">${escape(money(item))}</div><a class="button primary" href="${escape(itemURL(item.url))}" target="_blank" rel="noopener noreferrer">View on eBay ↗</a></div></div><table class="detail-table"><caption class="sr-only">Saved listing information and eBay attributes</caption><tbody>${Object.entries(attrs).filter(([,v]) => v != null && v !== "").map(([k,v]) => `<tr><th scope="row">${escape(k)}</th><td>${escape(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`).join("")}</tbody></table><p class="field-help">Saved from eBay search results. Confirm current price and availability on eBay.</p><details class="advanced"><summary data-focus="item-raw">All captured eBay data</summary><pre class="raw-data">${escape(JSON.stringify(item.raw || {},null,2))}</pre></details>`);
+  setHTML($("#item-detail"),`<div class="dialog-heading"><h2 id="item-detail-title">Item details</h2><button class="icon-button" data-close="item-dialog" data-focus="item-close" aria-label="Close item details">×</button></div><div class="item-detail-top">${image ? `<img class="detail-image" src="${escape(image)}" alt="" referrerpolicy="no-referrer">` : ""}<div><h3 class="detail-title">${escape(item.title)}</h3><div class="detail-price">${escape(money(item))}</div><a class="button primary" href="${escape(itemURL(item.url))}" target="_blank" rel="noopener noreferrer">View on ${platformName(item)} ↗</a></div></div><table class="detail-table"><caption class="sr-only">Saved listing information and eBay attributes</caption><tbody>${Object.entries(attrs).filter(([,v]) => v != null && v !== "").map(([k,v]) => `<tr><th scope="row">${escape(k)}</th><td>${escape(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`).join("")}</tbody></table><p class="field-help">Saved from ${platformName(item)} search results. Confirm the current price and availability on the marketplace.</p><details class="advanced"><summary data-focus="item-raw">All captured eBay data</summary><pre class="raw-data">${escape(JSON.stringify(item.raw || {},null,2))}</pre></details>`);
   if (expanded) $("#item-detail .advanced").open = true;
   if (!$("#item-dialog").open) $("#item-dialog").showModal();
 }
@@ -372,10 +438,14 @@ $("#logout").addEventListener("click",async () => {
   catch(error) {toast(error.message);} finally {$("#logout").disabled = false;}
 });
 $("#watch-form").addEventListener("input",updateChangeNotice);
-$("#watch-form").addEventListener("change",() => {updateLocation(); updateChangeNotice();});
+$("#watch-form").addEventListener("change",() => {updatePlatformOptions(); updateLocation(); updateChangeNotice();});
 $("#watch-form").addEventListener("submit",e => {e.preventDefault(); busy(e.currentTarget,async () => {
   const body = watchPayload();
-  if (!body.query) throw new Error("Enter your eBay search keywords.");
+  if (!body.query) throw new Error("Enter your search keywords.");
+  if (!body.platforms.length) throw new Error("Select at least one platform.");
+  for (const [key,budget] of Object.entries(body.market_filters))
+    if (budget.min_price != null && budget.max_price != null && budget.min_price > budget.max_price)
+      throw new Error(`${platformNames[key]}: maximum price must be at least the minimum price.`);
   if (body.filters.min_price != null && body.filters.max_price != null && body.filters.min_price > body.filters.max_price) {$("#max-price").focus(); throw new Error("Maximum price must be at least the minimum price.");}
   const edited = !!state.editing; const replaced = criteriaChanged();
   const watch = await api(edited ? `/api/watches/${state.editing}` : "/api/watches",{method:edited ? "PUT" : "POST",body:JSON.stringify(body)});

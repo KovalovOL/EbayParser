@@ -104,6 +104,7 @@ class Listing:
     availability: str = ""
     attributes: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict)
+    platform: str = "ebay"
 
     def to_dict(self):
         return asdict(self)

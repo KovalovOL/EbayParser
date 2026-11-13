@@ -18,6 +18,8 @@ from app.listing_identity import listing_identity
 from app.ebay_filters import COUNTRIES, LOCATION_REGIONS
 from app.messages import display_error
 from app.monitoring import monitoring_status
+from app.parser.ebay import build_search_url
+from app.parser.markets import build_market_url
 from app.schemas import Filters, LoginStart, LoginVerify, WatchInput, WatchToggle
 from app.security import current_user, digest, new_tokens, rotate_refresh
 from app.telegram import TelegramClient, TelegramError
@@ -53,7 +55,7 @@ async def browser_security(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; style-src 'self'; "
-        "img-src 'self' data: https://i.ebayimg.com https://*.ebayimg.com; "
+        "img-src 'self' data: https://i.ebayimg.com https://*.ebayimg.com https://*.buyee.jp https://img.kleinanzeigen.de https://*.kleinanzeigen.de; "
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     )
     if request.url.path.startswith("/api/"):
@@ -193,10 +195,11 @@ def me(user: User = Depends(current_user)):
 @app.get("/api/status")
 def status(user: User = Depends(current_user), db: Session = Depends(get_db)):
     states = {s.name: {"online": stamp() - s.heartbeat_at < 120, "last_seen": s.heartbeat_at, "error": display_error(s.error)}
-              for s in db.scalars(select(ServiceState))}
+              for s in db.scalars(select(ServiceState).where(ServiceState.name.in_(("worker", "bot"))))}
     return {"services": states, "monitoring": monitoring_status(db, user.id, states),
             "newness_basis": "title_price_location_per_user",
-            "search_pages_per_check": 1, "automatic_item_details": False}
+            "search_pages_per_check": 1, "search_pages_per_platform": 1,
+            "newness_scope": "within_each_platform", "automatic_item_details": False}
 
 
 def own_watch(db, user, watch_id):
@@ -207,10 +210,17 @@ def own_watch(db, user, watch_id):
 
 
 def watch_dict(watch, counts=None):
+    filters = Filters(**watch.filters).model_dump()
+    search_urls = {
+        key: build_search_url(watch.query, filters) if key == "ebay"
+        else build_market_url(key, watch.query, watch.market_filters.get(key, {}))
+        for key in watch.platforms
+    }
     return {k: getattr(watch, k) for k in (
         "id", "name", "query", "filters", "interval_seconds", "active", "initialized", "created_at",
-        "tracking_since", "last_checked_at", "next_check_at", "error", "search_url", "truncated"
-    )} | {"filters": Filters(**watch.filters).model_dump(),
+        "tracking_since", "last_checked_at", "next_check_at", "error", "search_url", "truncated",
+        "platforms", "market_filters", "platform_state"
+    )} | {"filters": filters, "search_urls": search_urls,
           "counts": counts or {}, "error": display_error(watch.error)}
 
 
@@ -234,7 +244,8 @@ def create_watch(payload: WatchInput, user: User = Depends(current_user), db: Se
     if db.scalar(select(func.count()).select_from(Watch).where(Watch.user_id == user.id)) >= 30:
         raise HTTPException(400, "You can save up to 30 searches. Delete a search before adding another.")
     watch = Watch(user_id=user.id, name=payload.name, query=payload.query,
-                  filters=payload.filters.model_dump(), interval_seconds=payload.interval_seconds)
+                  filters=payload.filters.model_dump(), interval_seconds=payload.interval_seconds,
+                  platforms=payload.platforms, market_filters={key: value.model_dump() for key, value in payload.market_filters.items()})
     db.add(watch)
     db.commit()
     return watch_dict(watch)
@@ -243,7 +254,11 @@ def create_watch(payload: WatchInput, user: User = Depends(current_user), db: Se
 @app.put("/api/watches/{watch_id}")
 def edit_watch(watch_id: int, payload: WatchInput, user: User = Depends(current_user), db: Session = Depends(get_db)):
     watch = own_watch(db, user, watch_id)
-    changed = watch.query != payload.query or Filters(**watch.filters).model_dump() != payload.filters.model_dump()
+    market_filters = {key: value.model_dump() for key, value in payload.market_filters.items()}
+    changed = (watch.query != payload.query or watch.platforms != payload.platforms
+               or watch.market_filters != market_filters or (
+                   "ebay" in payload.platforms and Filters(**watch.filters).model_dump() != payload.filters.model_dump()))
+    watch.platforms, watch.market_filters = payload.platforms, market_filters
     watch.name, watch.query = payload.name, payload.query
     watch.filters, watch.interval_seconds = payload.filters.model_dump(), payload.interval_seconds
     if changed:
@@ -251,8 +266,11 @@ def edit_watch(watch_id: int, payload: WatchInput, user: User = Depends(current_
         db.execute(delete(WatchItem).where(WatchItem.watch_id == watch.id))
         watch.initialized, watch.tracking_since = False, stamp()
         watch.revision += 1
+        watch.platform_state, watch.search_url, watch.truncated = {}, None, False
         watch.error, watch.failures = None, 0
     watch.next_check_at = stamp()
+    watch.platform_state = {key: entry | {"next_check_at": watch.next_check_at}
+                            for key, entry in watch.platform_state.items()}
     db.commit()
     return watch_dict(watch)
 
@@ -266,6 +284,7 @@ def toggle_watch(watch_id: int, payload: WatchToggle, user: User = Depends(curre
         if payload.active:
             # Listings appearing while paused belong to the new baseline.
             watch.tracking_since, watch.initialized, watch.next_check_at = stamp(), False, stamp()
+            watch.platform_state = {}
         else:
             db.execute(delete(Notification).where(Notification.item_id.in_(
                 select(WatchItem.id).where(WatchItem.watch_id == watch.id)), Notification.sent_at.is_(None)))
@@ -281,6 +300,8 @@ def check_watch(watch_id: int, user: User = Depends(current_user), db: Session =
     if watch.last_checked_at and stamp() - watch.last_checked_at < 60:
         raise HTTPException(429, "You can request a manual check once per minute.")
     watch.next_check_at = stamp()
+    watch.platform_state = {key: entry | {"next_check_at": watch.next_check_at}
+                            for key, entry in watch.platform_state.items()}
     db.commit()
     return {"ok": True}
 
@@ -318,7 +339,7 @@ def list_items(watch_id: int | None = None, only_new: bool = False, offset: int 
         if notification is None:
             notification = db.scalar(select(Notification).where(Notification.item_id == item.id,
                 Notification.seen_listing_id.is_(None)).order_by(Notification.id.desc()).limit(1))
-        items.append(item.data | {"id": item.id, "watch_id": item.watch_id, "watch_name": name,
+        items.append({"platform": "ebay"} | item.data | {"id": item.id, "watch_id": item.watch_id, "watch_name": name,
                                   "baseline": item.baseline, "is_new": item.is_new,
                                   "first_seen_at": item.first_seen_at, "last_seen_at": item.last_seen_at,
                                   "detailed_at": item.detailed_at, "detail_error": display_error(item.detail_error),

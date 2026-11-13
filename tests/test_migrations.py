@@ -27,6 +27,8 @@ def legacy_database(tmp_path):
         connection.execute(insert(WatchItem).values(id=1, watch_id=1, ebay_id=data["ebay_id"], data=data,
             baseline=True, matches=True, first_seen_at=100))
         connection.exec_driver_sql("INSERT INTO notifications VALUES (1, 1, 2, 123, NULL, 'Retry pending')")
+        for column in ("platforms", "market_filters", "platform_state"):
+            connection.exec_driver_sql(f"ALTER TABLE watches DROP COLUMN {column}")
     yield engine, data
     engine.dispose()
 
@@ -42,6 +44,9 @@ def test_upgrade_preserves_cards_and_outbox_and_allows_new_prices(legacy_databas
     upgrade(engine)
     upgrade(engine)  # Restarting any service must not replay or alter the migration.
     with engine.begin() as connection:
+        watch = connection.execute(select(Watch)).mappings().one()
+        assert watch["platforms"] == ["ebay"] and watch["initialized"]
+        assert watch["market_filters"] == watch["platform_state"] == {}
         assert connection.scalar(select(func.count()).select_from(WatchItem)) == 1
         assert connection.scalar(select(func.count()).select_from(SeenListing)) == 1
         alert = connection.execute(select(Notification)).mappings().one()

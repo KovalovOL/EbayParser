@@ -22,6 +22,15 @@ def initialize_schema(connection, metadata):
         column["name"] for column in inspector.get_columns("monitor_state")
     }:
         connection.exec_driver_sql("ALTER TABLE monitor_state ADD COLUMN browser VARCHAR(16)")
+    if "watches" in tables:
+        watch_columns = {column["name"] for column in inspector.get_columns("watches")}
+        for name, default in (("platforms", '["ebay"]'), ("market_filters", "{}"), ("platform_state", "{}")):
+            if name not in watch_columns:
+                connection.exec_driver_sql(f"ALTER TABLE watches ADD COLUMN {name} JSON NOT NULL DEFAULT '{default}'")
+    if "monitor_state" in tables and "platform" not in {
+        column["name"] for column in inspector.get_columns("monitor_state")
+    }:
+        connection.exec_driver_sql("ALTER TABLE monitor_state ADD COLUMN platform VARCHAR(16)")
     if not (new_seen_table or upgrade_alerts):
         return
 

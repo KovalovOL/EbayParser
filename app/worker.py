@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import signal
 import time
 from contextlib import suppress
@@ -9,10 +10,11 @@ from sqlalchemy.dialects.sqlite import insert
 
 from app.config import get_settings
 from app.db import init_db, session_scope, stamp
-from app.models import LoginChallenge, Notification, RefreshSession, SeenListing, User, Watch, WatchItem
+from app.models import LoginChallenge, Notification, RefreshSession, SeenListing, ServiceState, User, Watch, WatchItem
 from app.listing_identity import listing_identity
 from app.monitoring import checking, record_browser, record_result, restore_monitor
 from app.parser.ebay import EbayAccessError, EbayClient, Listing, ParseError, matches_filters
+from app.parser.markets import MarketAccessError, MarketClient, matches_market
 from app.runtime import configure_logging, heartbeat, process_lock
 from app.telegram import TelegramClient, TelegramError, item_message
 
@@ -29,36 +31,84 @@ def merge_listing(old: dict, fresh: dict) -> dict:
     return merged
 
 
-async def scan_watch(watch_id: int, ebay: EbayClient):
+def matches_source(listing, filters):
+    return matches_filters(listing, filters, native=True) if listing.platform == "ebay" else matches_market(listing, filters)
+
+
+def save_platform_state(watch, platform, result):
+    watch.platform_state = {**watch.platform_state, platform: result}
+    if len(watch.platforms) == 1:
+        watch.initialized = result.get("initialized", False)
+        watch.search_url = result.get("search_url")
+        watch.next_check_at = result["next_check_at"]
+    else:
+        states = [watch.platform_state.get(key, {}) for key in watch.platforms]
+        watch.initialized = all(entry.get("initialized") for entry in states)
+        watch.search_url = watch.platform_state.get("ebay", {}).get("search_url")
+        watch.next_check_at = min(entry.get("next_check_at", stamp()) for entry in states)
+    states = [watch.platform_state.get(key, {}) for key in watch.platforms]
+    watch.truncated = any(entry.get("truncated") for entry in states)
+    watch.error = " · ".join(entry["error"] for entry in states if entry.get("error")) or None
+    watch.failures = max((entry.get("failures", 0) for entry in states), default=0)
+    watch.last_checked_at = stamp()
+
+
+async def scan_watch(watch_id: int, ebay: EbayClient, markets=None, *, due_only=False):
     with session_scope() as db:
         watch = db.get(Watch, watch_id)
         if not watch or not watch.active:
             return
-        revision, query, filters = watch.revision, watch.query, dict(watch.filters)
+        platforms, revision = tuple(watch.platforms), watch.revision
+    clients = {"ebay": ebay, **(markets or {})}
+    for platform in platforms:
+        await scan_platform(watch_id, revision, platform, clients[platform], due_only=due_only)
+
+
+async def scan_platform(watch_id, revision, platform, client, *, due_only):
+    with session_scope() as db:
+        watch = db.get(Watch, watch_id)
+        if not watch or not watch.active or watch.revision != revision:
+            return
+        old = dict(watch.platform_state.get(platform, {}))
+        if due_only and old.get("next_check_at", 0) > stamp():
+            return
+        # The older database stored the eBay baseline directly on the watch.
+        old.setdefault("initialized", watch.initialized if platform == "ebay" else False)
+        old.setdefault("failures", watch.failures if platform == "ebay" and len(watch.platforms) == 1 else 0)
+        if platform == "ebay" and watch.search_url:
+            old.setdefault("search_url", watch.search_url)
+        query = watch.query
+        filters = dict(watch.filters if platform == "ebay" else watch.market_filters.get(platform, {}))
     try:
-        # One recognized results page is the complete check; never fetch item pages.
-        with checking(watch_id):
-            listings, truncated, url = await ebay.search(query, filters)
+        with checking(watch_id, platform):
+            listings, truncated, url = await client.search(query, filters)
     except ParseError as exc:
         if isinstance(exc, EbayAccessError):
             record_result(exc.retry_at, str(exc))
+        elif isinstance(exc, MarketAccessError):
+            with session_scope() as db:
+                key = f"access:{platform}"
+                row = db.get(ServiceState, key)
+                if row is None:
+                    row = ServiceState(name=key)
+                    db.add(row)
+                row.value = math.ceil(exc.retry_at)
         with session_scope() as db:
             watch = db.get(Watch, watch_id)
             if watch and watch.revision == revision and watch.active:
-                watch.failures += 1
-                watch.error = str(exc)
-                watch.last_checked_at = stamp()
-                if isinstance(exc, EbayAccessError):
-                    watch.next_check_at = exc.retry_at
-                else:
-                    watch.next_check_at = stamp() + min(3600, watch.interval_seconds * 2 ** min(watch.failures, 5))
+                failures = old["failures"] + 1
+                retry = exc.retry_at if isinstance(exc, (EbayAccessError, MarketAccessError)) else (
+                    stamp() + min(3600, watch.interval_seconds * 2 ** min(failures, 5)))
+                save_platform_state(watch, platform, old | {
+                    "error": str(exc), "failures": failures, "next_check_at": retry})
         return
-    record_result()
+    if platform == "ebay":
+        record_result()
     with session_scope() as db:
         watch = db.get(Watch, watch_id)
         if not watch or watch.revision != revision or not watch.active:
             return
-        baseline = not watch.initialized
+        baseline = not old["initialized"]
         for listing in listings:
             data = listing.to_dict()
             identity = listing_identity(data)
@@ -71,7 +121,7 @@ async def scan_watch(watch_id: int, ebay: EbayClient):
             else:
                 item.data = merge_listing(item.data, data)
             item.last_seen_at = stamp()
-            item.matches = matches_filters(listing, filters, native=True)
+            item.matches = matches_source(listing, filters)
             seen_id = db.scalar(insert(SeenListing).values(
                 user_id=watch.user_id, first_seen_at=stamp(), **identity
             ).on_conflict_do_nothing(index_elements=["user_id", "fingerprint"]).returning(SeenListing.id))
@@ -84,13 +134,12 @@ async def scan_watch(watch_id: int, ebay: EbayClient):
             elif item.matches is not True:
                 item.is_new = False
             if not baseline and changed and seen_id is not None and item.matches is True:
-                # Freeze each price/location event. Later edits to this eBay ID must not
+                # Freeze each price/location event. Later edits to this listing must not
                 # change an already queued Telegram message or prevent another new identity.
                 db.add(Notification(item_id=item.id, seen_listing_id=seen_id, data=data))
-        watch.initialized = True
-        watch.error, watch.failures = None, 0
-        watch.truncated, watch.search_url = truncated, url
-        watch.last_checked_at, watch.next_check_at = stamp(), stamp() + watch.interval_seconds
+        save_platform_state(watch, platform, {
+            "initialized": True, "error": None, "failures": 0, "truncated": truncated,
+            "search_url": url, "next_check_at": stamp() + watch.interval_seconds})
 
 
 async def deliver_notifications(telegram: TelegramClient):
@@ -108,7 +157,9 @@ async def deliver_notifications(telegram: TelegramClient):
                 db.delete(notification)
                 continue
             data = notification.data or item.data
-            if matches_filters(Listing(**data), watch.filters, native=True) is not True:
+            platform = data.get("platform", "ebay")
+            filters = watch.filters if platform == "ebay" else watch.market_filters.get(platform, {})
+            if platform not in watch.platforms or matches_source(Listing(**data), filters) is not True:
                 db.delete(notification)
                 continue
             if notification.seen_listing_id is None:
@@ -151,8 +202,13 @@ async def run():
     lock = process_lock("worker")
     settings = get_settings()
     ebay, telegram = EbayClient(settings, on_browser=record_browser), TelegramClient()
+    markets = {key: MarketClient(settings, key) for key in ("buyee", "kleinanzeigen")}
     restore_monitor(ebay)
-    log.info("One eBay results page per check; no item detail requests. Request delay: %.1f-%.1f seconds",
+    with session_scope() as db:
+        for platform, client in markets.items():
+            if state := db.get(ServiceState, f"access:{platform}"):
+                client.blocked_until = state.value
+    log.info("One results page per selected platform; no item detail requests. Request delay: %.1f-%.1f seconds",
              settings.request_delay_seconds,
              settings.request_delay_seconds + settings.request_delay_jitter_seconds)
     last_cleanup = 0
@@ -165,8 +221,8 @@ async def run():
                 with session_scope() as db:
                     watch_id = db.scalar(select(Watch.id).where(Watch.active.is_(True), Watch.next_check_at <= stamp())
                                          .order_by(Watch.next_check_at).limit(1))
-                if watch_id and ebay.blocked_until <= stamp():
-                    await scan_watch(watch_id, ebay)
+                if watch_id:
+                    await scan_watch(watch_id, ebay, markets, due_only=True)
                     await deliver_notifications(telegram)
                 else:
                     await asyncio.sleep(3)
@@ -182,6 +238,8 @@ async def run():
         with suppress(asyncio.CancelledError):
             await pulse
         await ebay.close()
+        for client in markets.values():
+            await client.close()
         await telegram.close()
         lock.close()
 

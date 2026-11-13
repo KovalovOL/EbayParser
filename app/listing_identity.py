@@ -22,6 +22,9 @@ def listing_identity(data: dict) -> dict:
     except (InvalidOperation, ValueError, TypeError):
         price = "text:" + normalized_text(data.get("price_text"))
     parts = [title, currency, price, location]
+    platform = data.get("platform", "ebay")
+    if platform != "ebay":  # Preserve all existing eBay fingerprints.
+        parts.insert(0, platform)
     fingerprint = hashlib.sha256(json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     return {"fingerprint": fingerprint, "title": title, "price": price,
             "currency": currency, "location": location}

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f7f3">
-  <meta name="description" content="Save eBay searches and receive new listing notifications in Telegram.">
+  <meta name="description" content="Save marketplace searches and receive new listing notifications in Telegram.">
   <title>Mira Tarel0chn1tsa</title>
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/style.css?v={{ assets['style.css'] }}">
@@ -24,20 +24,20 @@
       </div>
     </aside>
     <main>
-      <header class="topbar"><span>eBay monitoring</span><a class="market-label" href="https://www.ebay.com" target="_blank" rel="noopener noreferrer">Open eBay ↗</a></header>
+      <header class="topbar"><span>Marketplace monitoring</span></header>
       <section class="page-heading"><div><h1 id="page-title" tabindex="-1">All searches</h1><p id="page-description">Saved listings from your monitored searches.</p></div><button id="new-watch" class="button primary">＋ Add search</button></section>
       <section id="overview-stats" class="stats" aria-label="Monitoring totals across all searches">
         <div class="stat"><div class="stat-label">Enabled searches</div><strong id="stat-active">0</strong></div>
         <div class="stat"><div class="stat-label">Saved matches</div><strong id="stat-total">0</strong></div>
         <div class="stat accent"><div class="stat-label">New since monitoring</div><strong id="stat-new">0</strong></div>
       </section>
-      <p class="signal-note"><strong>Notification rule:</strong> The first check saves results without alerts. Later checks alert once per title + price + location combination across your searches.</p>
+      <p class="signal-note"><strong>Notification rule:</strong> The first check on each platform saves results without alerts. Later checks alert once per platform, title, price and location combination.</p>
       <div id="service-warning" class="alert warning" role="status" hidden></div>
       <div id="load-error" class="alert error" role="alert" hidden><span id="load-error-text"></span> <button id="retry-load" class="text-button">Retry now</button></div>
       <label class="mobile-watch" for="mobile-watch-select">Search<select id="mobile-watch-select"><option value="">All searches</option></select></label>
       <section id="selected-watch" class="selected-watch" aria-label="Search settings and status" hidden></section>
       <section class="results-section" aria-label="Saved listings">
-        <div class="results-heading"><div class="tabs" role="group" aria-label="Filter listings"><button id="tab-all" class="tab active" aria-pressed="true">All listings <span id="items-count">0</span></button><button id="tab-new" class="tab" aria-pressed="false" title="Title, price and location combinations first seen after the initial snapshot">New matches</button></div><span id="sync-text" class="sync-text">Checking connection…</span></div>
+        <div class="results-heading"><div class="tabs" role="group" aria-label="Filter listings"><button id="tab-all" class="tab active" aria-pressed="true">All listings <span id="items-count">0</span></button><button id="tab-new" class="tab" aria-pressed="false" title="Platform, title, price and location combinations first seen after the initial snapshot">New matches</button></div><span id="sync-text" class="sync-text">Checking connection…</span></div>
         <div id="results" aria-busy="false"></div>
         <div id="pagination" class="pagination" hidden><button id="prev-page" class="button subtle">← Previous</button><span id="page-info" role="status"></span><button id="next-page" class="button subtle">Next →</button></div>
       </section>
@@ -84,9 +84,29 @@
   <dialog id="watch-dialog" class="watch-dialog" aria-labelledby="watch-dialog-title">
     <form id="watch-form">
       <div class="dialog-heading"><h2 id="watch-dialog-title">Add search</h2><button type="button" class="icon-button" data-close="watch-dialog" aria-label="Close search form">×</button></div>
-      <div class="field"><label for="watch-query">eBay search keywords</label><input id="watch-query" name="query" placeholder="Sony Walkman WM-EX" maxlength="200" required></div>
+      <div class="field"><label for="watch-query">Search keywords</label><input id="watch-query" name="query" placeholder="Sony Walkman WM-EX" maxlength="200" required></div>
       <div class="field search-name"><label for="watch-name">Search name <span class="optional">(optional)</span></label><input id="watch-name" name="name" placeholder="Uses your search keywords if left blank" maxlength="100"></div>
-      <h3 class="form-section-label">Price and buying format</h3>
+      <fieldset class="platform-picker">
+        <legend>Where to search</legend>
+        <div class="extra-filters platform-options">
+          <label><input type="checkbox" name="platforms" value="ebay" checked><span>eBay<small>Global marketplace</small></span></label>
+          <label><input type="checkbox" name="platforms" value="buyee"><span>Buyee<small>Japanese auctions and flea market</small></span></label>
+          <label><input type="checkbox" name="platforms" value="kleinanzeigen"><span>Kleinanzeigen<small>German classifieds</small></span></label>
+        </div>
+        <p class="field-help">Select one or more. Keywords apply to every selected platform.</p>
+      </fieldset>
+      {% for key, label, currency in [('buyee', 'Buyee', 'JPY'), ('kleinanzeigen', 'Kleinanzeigen', 'EUR')] %}
+      <fieldset class="platform-budget" id="{{ key }}-options" hidden disabled>
+        <legend>{{ label }} budget ({{ currency }})</legend>
+        <div class="form-grid">
+          <div class="field"><label for="{{ key }}-min">Minimum price</label><input id="{{ key }}-min" name="{{ key }}_min_price" type="number" min="0" max="100000000" step="1" placeholder="No minimum"></div>
+          <div class="field"><label for="{{ key }}-max">Maximum price</label><input id="{{ key }}-max" name="{{ key }}_max_price" type="number" min="0" max="100000000" step="1" placeholder="No maximum"></div>
+        </div>
+        <p class="field-help">Item price in {{ currency }}, before delivery or service fees.</p>
+      </fieldset>
+      {% endfor %}
+      <fieldset class="ebay-options" id="ebay-options"><legend class="sr-only">eBay filters</legend>
+      <h3 class="form-section-label">eBay price and buying format</h3>
       <div class="form-grid three"><div class="field"><label for="min-price">Minimum price</label><input id="min-price" name="min_price" type="number" min="0" step="0.01" placeholder="No minimum"></div><div class="field"><label for="max-price">Maximum price</label><input id="max-price" name="max_price" type="number" min="0" step="0.01" placeholder="No maximum"></div><div class="field"><label for="currency">Currency</label><select id="currency" name="currency"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>AUD</option></select></div></div>
       <div class="form-grid"><div class="field"><label for="condition">Condition</label><select id="condition" name="condition"><option value="any">Any condition</option><option value="new">New</option><option value="used">Used</option><option value="refurbished">Refurbished</option><option value="parts">For parts</option></select></div><div class="field"><label for="buying-format">Buying format</label><select id="buying-format" name="buying_format"><option value="any">All listings</option><option value="buy_now">Buy It Now</option><option value="auction">Auction</option></select></div></div>
       <div class="checkbox-row"><label><input type="checkbox" name="free_shipping"> Free shipping only</label><label><input type="checkbox" name="include_shipping"> Include shipping in price limits</label></div>
@@ -115,10 +135,11 @@
       </div>
       <h3 class="form-section-label">Refine your search</h3>
       <div class="form-grid"><div class="field"><label for="seller">Seller</label><input id="seller" name="seller" placeholder="Any seller" maxlength="100"></div><div class="field"><label for="exclude-keywords">Exclude words or phrases</label><input id="exclude-keywords" name="exclude_keywords" placeholder="case, broken, manual"><small>Separate with commas.</small></div></div>
-      <div class="field"><label for="interval">Check every</label><select id="interval" name="interval_seconds"><option value="60">1 minute</option><option value="180">3 minutes</option><option value="300" selected>5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option><option value="86400">24 hours</option></select><small>Retries may take longer if eBay restricts access.</small></div>
       <details class="advanced" id="watch-advanced"><summary>Item attributes and category</summary><p class="muted">Use exact eBay item-specific names and values, such as Brand and Sony. A category ID is required for item-specific filters. Only information shown on the search cards is saved.</p><div id="attribute-rows"></div><button id="add-attribute" type="button" class="text-button">＋ Add attribute</button><div class="field category-field"><label for="category-id">eBay category ID</label><input id="category-id" name="category_id" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 15054" maxlength="12"></div></details>
-      <p class="form-note" id="watch-create-note">Each check reads the first eBay results page. The first check saves it without alerts. Later checks notify you about new title + price + location combinations across your searches.</p>
-      <p class="alert warning" id="watch-change-note" hidden>Changing keywords or filters deletes this search's saved results and pending alerts, then creates a new initial snapshot. Renaming or changing the interval keeps results.</p>
+      </fieldset>
+      <div class="field"><label for="interval">Check every</label><select id="interval" name="interval_seconds"><option value="60">1 minute</option><option value="180">3 minutes</option><option value="300" selected>5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option><option value="86400">24 hours</option></select><small>Retries may take longer if a platform restricts access.</small></div>
+      <p class="form-note" id="watch-create-note">Each check reads the first page of every selected platform. The first successful check on each platform saves listings without alerts.</p>
+      <p class="alert warning" id="watch-change-note" hidden>Changing keywords, platforms or filters deletes this search's saved results and pending alerts, then creates a new initial snapshot. Renaming or changing the interval keeps results.</p>
       <div id="watch-error" class="alert error" role="alert" hidden></div>
       <div class="dialog-actions"><button type="button" class="button subtle" data-close="watch-dialog">Cancel</button><button type="submit" class="button primary" id="watch-save">Save search</button></div>
     </form>

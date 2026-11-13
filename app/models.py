@@ -43,6 +43,9 @@ class Watch(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(100))
     query: Mapped[str] = mapped_column(String(200))
+    platforms: Mapped[list] = mapped_column(JSON, default=lambda: ["ebay"])
+    market_filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    platform_state: Mapped[dict] = mapped_column(JSON, default=dict)
     filters: Mapped[dict] = mapped_column(JSON, default=dict)
     interval_seconds: Mapped[int] = mapped_column(default=300)
     active: Mapped[bool] = mapped_column(default=True)
@@ -114,5 +117,6 @@ class MonitorState(Base):
     retry_at: Mapped[float] = mapped_column(default=0)
     checking_watch_id: Mapped[int | None] = mapped_column(ForeignKey("watches.id", ondelete="SET NULL"))
     error: Mapped[str | None] = mapped_column(Text)
+    platform: Mapped[str | None] = mapped_column(String(16))
     browser: Mapped[str | None] = mapped_column(String(16))
 

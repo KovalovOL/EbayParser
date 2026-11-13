@@ -82,7 +82,15 @@ async def check(url: str, output: Path):
                 fixtures["watches"].append(created); status = 201; data = created
             elif path == "/api/items":
                 params = parse_qs(urlsplit(route.request.url).query)
-                result = [] if params.get("watch_id") == ["2"] else copy.deepcopy(items)
+                if params.get("watch_id") == ["2"]:
+                    result = [items[0] | {"id": idx, "watch_id": 2, "platform": platform, "url": link,
+                                          "title": title, "image_url": "", "watch_name": "Fujifilm X100"}
+                              for idx, platform, title, link in [
+                                  (3, "buyee", "Buyee sample", "https://buyee.jp/item/jdirectitems/auction/q1251561601"),
+                                  (4, "kleinanzeigen", "Kleinanzeigen sample",
+                                   "https://www.kleinanzeigen.de/s-anzeige/example/3570591159-172-7")]]
+                else:
+                    result = copy.deepcopy(items)
                 if params.get("only_new") == ["true"]: result = [x for x in result if x["is_new"]]
                 data = {"items":result,"total":len(result)}
             elif path.startswith("/api/watches/"):
@@ -123,7 +131,7 @@ async def check(url: str, output: Path):
         await expect(page.locator("#item-dialog")).to_be_visible()
         await expect(page.locator(".detail-table")).to_contain_text("Brand")
         await expect(page.locator("[data-details]")).to_have_count(0)
-        await expect(page.locator(".detail-table")).to_contain_text("Title + price + location")
+        await expect(page.locator(".detail-table")).to_contain_text("Platform + title + price + location")
         await page.locator("#item-detail summary").click()
         items[0]["detailed_at"] = now
         items[0]["attributes"]["Color"] = "Silver"
@@ -210,6 +218,15 @@ async def check(url: str, output: Path):
         assert await page.locator("#watch-location").evaluate("el => el.getBoundingClientRect().height < 480")
         await page.locator("#watch-location").screenshot(path=str(output/"location-picker-desktop.png"))
         await page.screenshot(path=str(output/"search-filters-desktop.png"), full_page=True)
+        await page.locator('[name="platforms"][value="ebay"]').uncheck()
+        await expect(page.locator("#ebay-options")).not_to_be_visible()
+        await page.locator('[name="platforms"][value="buyee"]').check()
+        await page.locator("#buyee-max").fill("12000")
+        assert (await page.evaluate("watchPayload()"))["platforms"] == ["buyee"]
+        await page.locator('[name="platforms"][value="kleinanzeigen"]').check()
+        await page.locator("#kleinanzeigen-max").fill("120")
+        await page.locator('[name="platforms"][value="ebay"]').check()
+        await page.locator(".platform-picker").screenshot(path=str(output/"platform-picker.png"))
         await page.locator("#watch-query").fill("Fujifilm X100")
         await page.locator("#min-price").fill("100")
         await page.locator("#max-price").fill("50")
@@ -219,14 +236,26 @@ async def check(url: str, output: Path):
         await page.locator("#watch-save").click()
         await expect(page.locator("#watch-dialog")).not_to_be_visible()
         assert fixtures["created"]["name"] == "Fujifilm X100"
+        assert fixtures["created"]["platforms"] == ["ebay", "buyee", "kleinanzeigen"]
+        assert fixtures["created"]["market_filters"]["buyee"]["max_price"] == 12000
+        assert fixtures["created"]["market_filters"]["kleinanzeigen"]["max_price"] == 120
         saved_filters = fixtures["created"]["filters"]
         assert saved_filters["location_region"] == "europe" and saved_filters["location"] == ""
         assert all(saved_filters[key] for key in ("accepts_offers", "returns_accepted", "free_returns", "sale_items"))
         await expect(page.locator("#page-title")).to_have_text("Fujifilm X100")
         await expect(page.locator("#selected-watch .filter-tags")).to_contain_text("Location: Europe")
         await expect(page.locator("#selected-watch .filter-tags")).to_contain_text("Free returns")
+        await expect(page.locator("#selected-watch .platform-status")).to_contain_text("Kleinanzeigen")
+        await expect(page.locator("#selected-watch .filter-tags")).to_contain_text("12000 JPY")
+        await expect(page.get_by_role("link", name="View on Buyee ↗")).to_have_attribute(
+            "href", "https://buyee.jp/item/jdirectitems/auction/q1251561601")
+        await expect(page.get_by_role("link", name="View on Kleinanzeigen ↗")).to_have_attribute(
+            "href", "https://www.kleinanzeigen.de/s-anzeige/example/3570591159-172-7")
         await page.locator('[data-action="edit"]').click()
         await expect(page.locator('[name="location_region"][value="europe"]')).to_be_checked()
+        await expect(page.locator('[name="platforms"][value="buyee"]')).to_be_checked()
+        await expect(page.locator("#buyee-max")).to_have_value("12000")
+        await expect(page.locator("#kleinanzeigen-max")).to_have_value("120")
         for name in ("accepts_offers", "returns_accepted", "free_returns", "sale_items"):
             await expect(page.locator(f'[name="{name}"]')).to_be_checked()
         await expect(page.locator("#watch-change-note")).not_to_be_visible()
@@ -290,7 +319,7 @@ async def check(url: str, output: Path):
         assert await page.locator("#login-dialog").evaluate("el => el.scrollWidth <= el.clientWidth")
         assert not errors, errors
         await browser.close()
-    print("UI checks passed: login, listings, region selection, custom country, offers/returns/sale filters, "
+    print("UI checks passed: login, listings, three-platform selection and budgets, region selection, custom country, offers/returns/sale filters, "
           "filter persistence and editing, delete/cancel, offline retry, monitoring states, mobile layout, sign-out.")
 
 
