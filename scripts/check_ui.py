@@ -154,6 +154,15 @@ async def check(url: str, output: Path):
             if code == "restricted":
                 await expect(page.locator('[data-action="check"]')).to_be_disabled()
                 await page.screenshot(path=str(output/"dashboard-paused-desktop.png"),full_page=True)
+        # A shared eBay pause must mark its searches as unavailable even while
+        # another source keeps the account in a partially working state.
+        fixtures["monitoring"].update(state="degraded", ebay_retry_at=now+900,
+                                      platform_retries={"ebay": now+900})
+        await page.evaluate("load()")
+        await expect(page.locator("#connection-text")).to_have_text("Some sources unavailable")
+        await expect(page.locator('.watch-link[data-select-watch="1"] .dot')).to_have_class("dot error")
+        fixtures["monitoring"].pop("platform_retries")
+        fixtures["monitoring"].update(ebay_retry_at=None)
         fixtures["monitoring"].update(state="checking",browser="firefox")
         await page.evaluate("load()")
         await expect(page.locator("#connection-text")).to_have_text("Checking eBay · Firefox")

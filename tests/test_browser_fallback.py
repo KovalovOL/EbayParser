@@ -74,6 +74,8 @@ async def test_both_blocked_set_one_cooldown_and_prevent_more_requests(fallback)
     with pytest.raises(EbayAccessError):
         await f.client.fetch("https://www.ebay.com/sch/i.html?_nkw=other")
     assert f.chromium.get.await_count == f.firefox.get.await_count == 1
+    f.firefox.close.assert_awaited_once()
+    assert f.client.active_transport is None
 
 
 async def test_retry_after_from_first_browser_is_preserved_if_firefox_also_fails(fallback):

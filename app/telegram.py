@@ -1,4 +1,3 @@
-import asyncio
 import html
 import logging
 
@@ -12,7 +11,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class TelegramError(Exception):
-    pass
+    def __init__(self, message, *, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class TelegramClient:
@@ -36,9 +37,8 @@ class TelegramClient:
             code = data.get("error_code", response.status_code)
             if code == 409:
                 raise TelegramError("Telegram 409: stop the other bot process or disable this bot's webhook.")
-            if code == 429:
-                await asyncio.sleep(min(data.get("parameters", {}).get("retry_after", 5), 30))
-            raise TelegramError(f"Telegram rejected the request (code {code})")
+            retry_after = data.get("parameters", {}).get("retry_after") if code == 429 else None
+            raise TelegramError(f"Telegram rejected the request (code {code})", retry_after=retry_after)
         return data["result"]
 
     async def send(self, chat_id: int, message: str):

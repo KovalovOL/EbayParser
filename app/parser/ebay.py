@@ -496,6 +496,11 @@ class EbayClient:
             if access_failures:
                 self.blocked_until = max(time.time() + self.settings.ebay_block_cooldown_seconds,
                                          *(exc.retry_at for exc in access_failures))
+                if browser and self.active_transport is not None:
+                    # No page should keep running scripts throughout a shared
+                    # cooldown. Cookies remain in its persistent profile.
+                    await self.active_transport.close()
+                    self.active_transport = None
                 minutes = round((self.blocked_until - time.time()) / 60)
                 raise EbayAccessError(f"{message} All eBay requests are paused for at least {minutes} min.",
                                       self.blocked_until)

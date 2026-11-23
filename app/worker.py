@@ -12,8 +12,9 @@ from app.config import get_settings
 from app.db import init_db, session_scope, stamp
 from app.models import LoginChallenge, Notification, RefreshSession, SeenListing, ServiceState, User, Watch, WatchItem
 from app.listing_identity import listing_identity
-from app.monitoring import checking, record_browser, record_result, restore_monitor
+from app.monitoring import checking, platform_next_check, record_browser, record_result, restore_monitor
 from app.parser.ebay import EbayAccessError, EbayClient, Listing, ParseError, matches_filters
+from app.parser.errors import BrowserError
 from app.parser.markets import MarketAccessError, MarketClient, matches_market
 from app.runtime import configure_logging, heartbeat, process_lock
 from app.telegram import TelegramClient, TelegramError, item_message
@@ -70,7 +71,7 @@ async def scan_platform(watch_id, revision, platform, client, *, due_only):
         if not watch or not watch.active or watch.revision != revision:
             return
         old = dict(watch.platform_state.get(platform, {}))
-        if due_only and old.get("next_check_at", 0) > stamp():
+        if due_only and max(platform_next_check(watch, platform), getattr(client, "blocked_until", 0)) > stamp():
             return
         # The older database stored the eBay baseline directly on the watch.
         old.setdefault("initialized", watch.initialized if platform == "ebay" else False)
@@ -81,8 +82,18 @@ async def scan_platform(watch_id, revision, platform, client, *, due_only):
         filters = dict(watch.filters if platform == "ebay" else watch.market_filters.get(platform, {}))
     try:
         with checking(watch_id, platform):
-            listings, truncated, url = await client.search(query, filters)
+            try:
+                async with asyncio.timeout(180):
+                    listings, truncated, url = await client.search(query, filters)
+            except TimeoutError:
+                raise ParseError("Source check timed out. A retry is scheduled automatically.") from None
+            except ParseError:
+                raise
+            except Exception as exc:
+                log.error("Search %s / %s raised %s", watch_id, platform, type(exc).__name__)
+                raise ParseError("Source check failed unexpectedly. A retry is scheduled automatically.") from None
     except ParseError as exc:
+        log.warning("Search %s / %s failed: %s", watch_id, platform, exc)
         if isinstance(exc, EbayAccessError):
             record_result(exc.retry_at, str(exc))
         elif isinstance(exc, MarketAccessError):
@@ -97,10 +108,15 @@ async def scan_platform(watch_id, revision, platform, client, *, due_only):
             watch = db.get(Watch, watch_id)
             if watch and watch.revision == revision and watch.active:
                 failures = old["failures"] + 1
-                retry = exc.retry_at if isinstance(exc, (EbayAccessError, MarketAccessError)) else (
-                    stamp() + min(3600, watch.interval_seconds * 2 ** min(failures, 5)))
+                if isinstance(exc, (EbayAccessError, MarketAccessError)):
+                    retry = exc.retry_at
+                elif isinstance(exc, BrowserError):
+                    retry = stamp() + min(300, 30 * 2 ** min(failures, 4))
+                else:
+                    retry = stamp() + min(3600, watch.interval_seconds * 2 ** min(failures, 5))
                 save_platform_state(watch, platform, old | {
-                    "error": str(exc), "failures": failures, "next_check_at": retry})
+                    "error": str(exc), "failures": failures, "next_check_at": retry,
+                    "last_checked_at": stamp()})
         return
     if platform == "ebay":
         record_result()
@@ -109,6 +125,7 @@ async def scan_platform(watch_id, revision, platform, client, *, due_only):
         if not watch or watch.revision != revision or not watch.active:
             return
         baseline = not old["initialized"]
+        queued = 0
         for listing in listings:
             data = listing.to_dict()
             identity = listing_identity(data)
@@ -137,9 +154,13 @@ async def scan_platform(watch_id, revision, platform, client, *, due_only):
                 # Freeze each price/location event. Later edits to this listing must not
                 # change an already queued Telegram message or prevent another new identity.
                 db.add(Notification(item_id=item.id, seen_listing_id=seen_id, data=data))
-        save_platform_state(watch, platform, {
+                queued += 1
+        save_platform_state(watch, platform, old | {
             "initialized": True, "error": None, "failures": 0, "truncated": truncated,
-            "search_url": url, "next_check_at": stamp() + watch.interval_seconds})
+            "search_url": url, "next_check_at": stamp() + watch.interval_seconds,
+            "last_checked_at": stamp(), "last_success_at": stamp()})
+        log.info("Search %s / %s: %s listings, %s alerts queued, baseline=%s",
+                 watch_id, platform, len(listings), queued, baseline)
 
 
 async def deliver_notifications(telegram: TelegramClient):
@@ -147,6 +168,7 @@ async def deliver_notifications(telegram: TelegramClient):
         ids = list(db.scalars(select(Notification.id).where(Notification.sent_at.is_(None),
             Notification.next_attempt_at <= stamp()).order_by(Notification.id).limit(20)))
     for notification_id in ids:
+        heartbeat("delivery")
         with session_scope() as db:
             notification = db.get(Notification, notification_id)
             if not notification or notification.sent_at:
@@ -172,15 +194,27 @@ async def deliver_notifications(telegram: TelegramClient):
                     db.delete(notification)
                     continue
             user = db.get(User, watch.user_id)
-            try:
-                await telegram.send(user.chat_id, item_message(watch.name, data))
-            except TelegramError as exc:
+            chat_id, message = user.chat_id, item_message(watch.name, data)
+        # Never keep a database transaction open during network I/O: scans and
+        # delivery run independently and must not hold up each other's writes.
+        failure = None
+        try:
+            await telegram.send(chat_id, message)
+        except TelegramError as exc:
+            failure = exc
+        with session_scope() as db:
+            notification = db.get(Notification, notification_id)
+            if notification is None:
+                continue
+            if failure:
                 notification.attempts += 1
-                notification.error = str(exc)
-                notification.next_attempt_at = stamp() + min(21600, 30 * 2 ** min(notification.attempts, 10))
+                notification.error = str(failure)
+                delay = max(failure.retry_after or 0, min(300, 15 * 2 ** min(notification.attempts, 5)))
+                notification.next_attempt_at = stamp() + delay
+                log.warning("Notification %s failed; retry in %ss: %s", notification_id, delay, failure)
             else:
                 notification.sent_at, notification.error = stamp(), None
-        heartbeat("worker")
+                log.info("Notification %s delivered", notification_id)
         await asyncio.sleep(1.1)  # Below Telegram's per-chat free message rate.
 
 
@@ -194,6 +228,27 @@ async def keep_heartbeat():
     while True:
         await asyncio.sleep(20)
         heartbeat("worker")
+
+
+def next_due_watch(clients):
+    now = stamp()
+    with session_scope() as db:
+        due = [(platform_next_check(watch, platform), watch.id)
+               for watch in db.scalars(select(Watch).where(Watch.active.is_(True), Watch.next_check_at <= now))
+               for platform in watch.platforms
+               if max(platform_next_check(watch, platform), getattr(clients[platform], "blocked_until", 0)) <= now]
+        return min(due)[1] if due else None
+
+
+async def notification_loop(telegram):
+    while True:
+        try:
+            await deliver_notifications(telegram)
+            heartbeat("delivery")
+        except Exception:
+            heartbeat("delivery", "Notification delivery failed. Check the worker logs.")
+            log.exception("Notification delivery iteration failed")
+        await asyncio.sleep(2)
 
 
 async def run():
@@ -213,17 +268,14 @@ async def run():
              settings.request_delay_seconds + settings.request_delay_jitter_seconds)
     last_cleanup = 0
     pulse = asyncio.create_task(keep_heartbeat())
+    delivery = asyncio.create_task(notification_loop(telegram))
     try:
         while True:
             try:
                 heartbeat("worker")
-                await deliver_notifications(telegram)
-                with session_scope() as db:
-                    watch_id = db.scalar(select(Watch.id).where(Watch.active.is_(True), Watch.next_check_at <= stamp())
-                                         .order_by(Watch.next_check_at).limit(1))
+                watch_id = next_due_watch({"ebay": ebay, **markets})
                 if watch_id:
                     await scan_watch(watch_id, ebay, markets, due_only=True)
-                    await deliver_notifications(telegram)
                 else:
                     await asyncio.sleep(3)
                 if time.monotonic() - last_cleanup > 3600:
@@ -235,8 +287,11 @@ async def run():
                 await asyncio.sleep(10)
     finally:
         pulse.cancel()
+        delivery.cancel()
         with suppress(asyncio.CancelledError):
             await pulse
+        with suppress(asyncio.CancelledError):
+            await delivery
         await ebay.close()
         for client in markets.values():
             await client.close()

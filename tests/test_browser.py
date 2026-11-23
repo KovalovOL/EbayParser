@@ -377,3 +377,24 @@ async def test_cookie_restore_preserves_native_cookies_and_ignores_persistent_sn
         f.context.add_cookies.assert_awaited_once_with([missing])
     finally:
         await transport.close()
+
+
+async def test_headed_startup_failure_retries_with_fresh_display(browser_fake, monkeypatch):
+    f = browser_fake
+    f.settings.ebay_browser_headless = False
+    displays = [SimpleNamespace(start=AsyncMock(return_value=f':{77+i}'), close=AsyncMock()) for i in range(2)]
+    available = iter(displays)
+    monkeypatch.setattr('app.browser.sys.platform', 'linux')
+    monkeypatch.delenv('DISPLAY', raising=False)
+    monkeypatch.setattr('app.browser.VirtualDisplay', lambda: next(available))
+    monkeypatch.setattr('app.browser.asyncio.sleep', AsyncMock())
+    f.playwright.chromium.launch_persistent_context.side_effect = [PlaywrightError('cannot open display'), f.context]
+    transport = BrowserTransport(f.settings)
+    try:
+        await transport.start()
+        assert f.playwright.chromium.launch_persistent_context.await_count == 2
+        displays[0].close.assert_awaited_once()
+        assert f.playwright.chromium.launch_persistent_context.call_args.kwargs['env']['DISPLAY'] == ':78'
+    finally:
+        await transport.close()
+    displays[1].close.assert_awaited_once()

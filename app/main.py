@@ -195,7 +195,7 @@ def me(user: User = Depends(current_user)):
 @app.get("/api/status")
 def status(user: User = Depends(current_user), db: Session = Depends(get_db)):
     states = {s.name: {"online": stamp() - s.heartbeat_at < 120, "last_seen": s.heartbeat_at, "error": display_error(s.error)}
-              for s in db.scalars(select(ServiceState).where(ServiceState.name.in_(("worker", "bot"))))}
+              for s in db.scalars(select(ServiceState).where(ServiceState.name.in_(("worker", "bot", "delivery"))))}
     return {"services": states, "monitoring": monitoring_status(db, user.id, states),
             "newness_basis": "title_price_location_per_user",
             "search_pages_per_check": 1, "search_pages_per_platform": 1,

@@ -17,6 +17,7 @@ RUN python -m playwright install --with-deps --no-shell chromium firefox \
     && chown signal:signal /browser-profile \
     && chmod 700 /browser-profile \
     && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 
 FROM browser-deps AS browser
 COPY --chown=signal:signal app ./app

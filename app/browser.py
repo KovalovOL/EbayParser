@@ -97,6 +97,16 @@ class BrowserTransport:
         self.request_lock = asyncio.Lock()
 
     async def start(self):
+        for attempt in range(2):
+            try:
+                return await self._start_once()
+            except BrowserError:
+                if attempt or self.settings.ebay_browser_headless or sys.platform != "linux":
+                    raise
+                log.warning("Retrying %s startup with a fresh virtual display", self.engine)
+                await asyncio.sleep(1)
+
+    async def _start_once(self):
         async with self.start_lock:
             if self.context is not None:
                 return
@@ -285,6 +295,7 @@ class BrowserTransport:
                                        await response.all_headers() if response else {})
             except PlaywrightTimeout:
                 await self.snapshot_error(None, "Navigation timeout")
+                await self.close()
                 raise BrowserError(f"eBay took too long to load in {self.engine.title()}.") from None
             except PlaywrightError:
                 await self.close()

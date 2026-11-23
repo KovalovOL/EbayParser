@@ -112,7 +112,7 @@ async def test_block_is_persisted_and_restored_before_next_request(user):
         assert db.get(Watch, watch_id).initialized
 
 
-async def test_access_errors_do_not_add_per_watch_exponential_delays(user):
+async def test_shared_access_pause_preserves_other_searches_original_schedules(user):
     first = saved_watch(user, failures=20, error="HTTP 403", next_check_at=time.time()+3600)
     second = saved_watch(user, failures=3, error="HTTP 403", next_check_at=time.time()+2400)
     paused = saved_watch(user, active=False, error="HTTP 403", next_check_at=time.time()+7200)
@@ -125,7 +125,8 @@ async def test_access_errors_do_not_add_per_watch_exponential_delays(user):
 
     await scan_watch(first, Blocked())
     with SessionLocal() as db:
-        assert db.get(Watch, first).next_check_at == db.get(Watch, second).next_check_at == deadline
+        assert db.get(Watch, first).next_check_at == deadline
+        assert db.get(Watch, second).next_check_at > deadline + 1400
         assert db.get(Watch, paused).next_check_at > deadline+6000
         assert db.get(Watch, healthy_later).next_check_at > deadline+6000
 
@@ -161,3 +162,27 @@ def test_legacy_hour_backoff_is_repaired_even_after_another_search_cleared_pause
     with SessionLocal() as db:
         assert db.get(Watch, failed).next_check_at <= time.time()+1
         assert db.get(Watch, healthy).next_check_at > time.time()+295
+
+
+def test_mixed_sources_report_degraded_and_show_each_shared_pause(client, auth, user):
+    saved_watch(user, platforms=['ebay', 'kleinanzeigen'], next_check_at=time.time() - 1)
+    heartbeat('worker')
+    deadline = time.time() + 900
+    record_result(deadline, 'HTTP 403')
+    result = status(client, auth)
+    assert result['state'] == 'degraded'
+    assert result['platform_retries'] == {'ebay': deadline}
+    assert result['next_check_at'] < deadline
+
+
+def test_buyee_only_pause_is_visible_in_status(client, auth, user):
+    saved_watch(user, platforms=['buyee'], next_check_at=time.time() - 1)
+    heartbeat('worker')
+    deadline = int(time.time()) + 900
+    with SessionLocal() as db:
+        db.add(ServiceState(name='access:buyee', value=deadline))
+        db.commit()
+    result = status(client, auth)
+    assert result['state'] == 'restricted'
+    assert result['retry_at'] == deadline
+    assert result['platform_retries'] == {'buyee': deadline}

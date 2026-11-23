@@ -79,7 +79,7 @@ async def run():
             except TelegramError as exc:
                 heartbeat("bot", str(exc))
                 log.warning("%s", exc)
-                await asyncio.sleep(10)
+                await asyncio.sleep(max(10, exc.retry_after or 0))
             except Exception:
                 heartbeat("bot", "The Telegram bot encountered an internal error. Check the bot logs.")
                 log.exception("Bot update processing failed")

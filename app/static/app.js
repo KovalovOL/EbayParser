@@ -135,7 +135,7 @@ function renderWatches() {
   setHTML($("#mobile-watch-select"),options); $("#mobile-watch-select").value = state.selected ?? "";
   $("#all-watches").classList.toggle("selected",state.selected === null);
   $("#all-watches").setAttribute("aria-pressed",String(state.selected === null));
-  setHTML($("#watch-list"),state.watches.length ? state.watches.map(w => `<button class="watch-link ${w.id === state.selected ? "active" : ""}" data-select-watch="${w.id}" data-focus="watch-${w.id}" aria-current="${w.id === state.selected ? "true" : "false"}" title="${escape(`${w.name}: ${watchStatus(w)}`)}"><span class="dot ${!w.active ? "" : w.error || state.monitoring?.state === "restricted" ? "error" : "online"}" aria-hidden="true"></span><span class="watch-title">${escape(w.name)}<small>${watchStatus(w)}</small></span><span class="watch-counter" aria-label="${w.counts.total || 0} saved matches">${w.counts.total || 0}</span></button>`).join("") : '<p class="sidebar-empty">No saved searches yet.</p>');
+  setHTML($("#watch-list"),state.watches.length ? state.watches.map(w => `<button class="watch-link ${w.id === state.selected ? "active" : ""}" data-select-watch="${w.id}" data-focus="watch-${w.id}" aria-current="${w.id === state.selected ? "true" : "false"}" title="${escape(`${w.name}: ${watchStatus(w)}`)}"><span class="dot ${!w.active ? "" : w.error || ebayPause(w) || state.monitoring?.state === "restricted" ? "error" : "online"}" aria-hidden="true"></span><span class="watch-title">${escape(w.name)}<small>${watchStatus(w)}</small></span><span class="watch-counter" aria-label="${w.counts.total || 0} saved matches">${w.counts.total || 0}</span></button>`).join("") : '<p class="sidebar-empty">No saved searches yet.</p>');
   const w = state.watches.find(w => w.id === state.selected);
   $("#page-title").textContent = w ? w.name : "All searches";
   $("#page-description").textContent = w ? `Keywords: ${w.query}` : "Saved listings from your monitored searches.";
@@ -163,10 +163,10 @@ function renderWatches() {
     const url = searchURL(w.search_urls?.[key] || source?.search_url || (platforms.length === 1 ? w.search_url : ""),key);
     const title = platformNames[key];
     const link = url ? `<a class="item-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">${title} ↗</a>` : title;
-    const retry = key === "ebay" && state.monitoring?.ebay_retry_at;
+    const retry = state.monitoring?.platform_retries?.[key] || (key === "ebay" && state.monitoring?.ebay_retry_at);
     const status = !w.active ? "Paused" : retry ? `Retry ${date(retry)}` : source?.error
       ? `Retry ${date(source.next_check_at)}` : (source?.initialized || (!source && w.initialized)) ? "Active" : "Awaiting first check";
-    return `<span>${link} · ${status}</span>`;
+    return `<span>${link} · ${status}${source?.last_success_at ? ` · Last success: ${date(source.last_success_at)}` : ""}</span>`;
   }).join("");
   const retryAt = ebayPause(w);
   const blocked = Boolean(retryAt);
@@ -208,7 +208,9 @@ function connectionError(message) {
 function renderMonitoring(status) {
   const m = status.monitoring || {state:"offline"};
   const browser = !m.checking_platform || m.checking_platform === "eBay" ? {chromium:"Chromium",firefox:"Firefox"}[m.browser] : null;
-  const labels = {monitoring:"Monitoring",checking:`Checking ${m.checking_platform || "eBay"}${browser ? ` · ${browser}` : "…"}`,restricted:`eBay paused until ${date(m.retry_at)}`,
+  const paused = Object.keys(m.platform_retries || {ebay:m.retry_at});
+  const pausedName = paused.length === 1 ? platformNames[paused[0]] : "Sources";
+  const labels = {monitoring:"Monitoring",degraded:"Some sources unavailable",checking:`Checking ${m.checking_platform || "eBay"}${browser ? ` · ${browser}` : "…"}`,restricted:`${pausedName} paused until ${date(m.retry_at)}`,
     paused:"All searches paused",no_searches:"No saved searches",offline:"Monitoring worker offline",
     error:"Monitoring error",retrying:"Searches waiting to retry"};
   const details = [];
@@ -216,14 +218,16 @@ function renderMonitoring(status) {
     details.push("Access restricted · retry is automatic");
     if (m.next_check_at > m.retry_at + 1) details.push(`Next attempt: ${date(m.next_check_at)}`);
   }
-  else if (["monitoring","retrying"].includes(m.state)) details.push(m.next_check_at > Date.now()/1000 ? `Next attempt: ${date(m.next_check_at)}` : "Next check queued");
+  else if (["monitoring","retrying","degraded"].includes(m.state)) details.push(m.next_check_at > Date.now()/1000 ? `Next attempt: ${date(m.next_check_at)}` : "Next check queued");
   else if (m.state === "offline") details.push("Checks will resume when the worker reconnects");
   else if (m.state === "error") details.push(m.error || "The worker will retry automatically");
   if (["monitoring","checking"].includes(m.state) && m.failed_searches) details.push(`${m.failed_searches} ${m.failed_searches === 1 ? "search" : "searches"} waiting to retry`);
-  if (m.ebay_retry_at && m.state !== "restricted") details.push(`eBay paused until ${date(m.ebay_retry_at)}`);
+  if (m.state !== "restricted") for (const [platform,retry] of Object.entries(m.platform_retries || {})) details.push(`${platformNames[platform]} paused until ${date(retry)}`);
   const bot = status.services.bot;
   if (!bot?.online) details.push("Telegram bot offline");
   else if (bot.error) details.push("Telegram bot needs attention");
+  const delivery = status.services.delivery;
+  if (delivery && (!delivery.online || delivery.error)) details.push("Notification delivery needs attention");
   $("#connection-text").textContent = labels[m.state] || "Monitoring status unavailable";
   $("#connection-detail").textContent = details.join("\n");
   $("#connection-dot").className = `dot ${["monitoring","checking"].includes(m.state) && bot?.online && !bot.error ? "online" : ["no_searches","paused"].includes(m.state) ? "" : "error"}`;
