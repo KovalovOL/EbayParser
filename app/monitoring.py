@@ -1,5 +1,6 @@
-"""Shared eBay state is independent of process liveness and survives worker restarts."""
+"""Shared source recovery state survives worker restarts independently of liveness."""
 from contextlib import contextmanager
+from math import ceil
 
 from sqlalchemy import select
 
@@ -14,13 +15,53 @@ def platform_next_check(watch, platform):
         "next_check_at", watch.next_check_at if len(watch.platforms) == 1 else 0)
 
 
-def record_result(retry_at=0, error=None):
+def save_access_state(db, platform, client):
+    if client is None or not hasattr(client, "access_failures"):
+        return
+    key = f"access_failures:{platform}"
+    state = db.get(ServiceState, key)
+    if state is None:
+        state = ServiceState(name=key)
+        db.add(state)
+    state.value = client.access_failures
+    if platform == "ebay":
+        browser = db.get(ServiceState, "preferred_browser:ebay")
+        if browser is None:
+            browser = ServiceState(name="preferred_browser:ebay")
+            db.add(browser)
+        browser.value = int(client.preferred_browser == "firefox")
+
+
+def restore_access_state(db, platform, client):
+    if state := db.get(ServiceState, f"access_failures:{platform}"):
+        client.access_failures = max(0, state.value)
+    if platform == "ebay":
+        if browser := db.get(ServiceState, "preferred_browser:ebay"):
+            client.preferred_browser = "firefox" if browser.value == 1 else "chromium"
+    elif state := db.get(ServiceState, f"access:{platform}"):
+        client.blocked_until = state.value
+
+
+def record_market_result(platform, client, retry_at=0):
+    with session_scope() as db:
+        key = f"access:{platform}"
+        state = db.get(ServiceState, key)
+        if state is None:
+            state = ServiceState(name=key)
+            db.add(state)
+        # Round up so restarting cannot shorten the agreed quiet window.
+        state.value = ceil(retry_at)
+        save_access_state(db, platform, client)
+
+
+def record_result(retry_at=0, error=None, *, client=None):
     with session_scope() as db:
         state = db.get(MonitorState, 1)
         if state is None:
             state = MonitorState(id=1)
             db.add(state)
         state.retry_at, state.error = retry_at, error
+        save_access_state(db, "ebay", client)
         # A service pause gates requests, but must not rewrite other searches'
         # schedules: doing so lets one failing search starve all the others.
 
@@ -36,6 +77,7 @@ def record_browser(browser):
 
 def restore_monitor(ebay):
     with session_scope() as db:
+        restore_access_state(db, "ebay", ebay)
         state = db.get(MonitorState, 1)
         if state:
             ebay.blocked_until = state.retry_at

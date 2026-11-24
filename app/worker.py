@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import signal
 import time
 from contextlib import suppress
@@ -12,7 +11,8 @@ from app.config import get_settings
 from app.db import init_db, session_scope, stamp
 from app.models import LoginChallenge, Notification, RefreshSession, SeenListing, ServiceState, User, Watch, WatchItem
 from app.listing_identity import listing_identity
-from app.monitoring import checking, platform_next_check, record_browser, record_result, restore_monitor
+from app.monitoring import (checking, platform_next_check, record_browser, record_market_result,
+                            record_result, restore_access_state, restore_monitor)
 from app.parser.ebay import EbayAccessError, EbayClient, Listing, ParseError, matches_filters
 from app.parser.errors import BrowserError
 from app.parser.markets import MarketAccessError, MarketClient, matches_market
@@ -95,15 +95,9 @@ async def scan_platform(watch_id, revision, platform, client, *, due_only):
     except ParseError as exc:
         log.warning("Search %s / %s failed: %s", watch_id, platform, exc)
         if isinstance(exc, EbayAccessError):
-            record_result(exc.retry_at, str(exc))
+            record_result(exc.retry_at, str(exc), client=client)
         elif isinstance(exc, MarketAccessError):
-            with session_scope() as db:
-                key = f"access:{platform}"
-                row = db.get(ServiceState, key)
-                if row is None:
-                    row = ServiceState(name=key)
-                    db.add(row)
-                row.value = math.ceil(exc.retry_at)
+            record_market_result(platform, client, exc.retry_at)
         with session_scope() as db:
             watch = db.get(Watch, watch_id)
             if watch and watch.revision == revision and watch.active:
@@ -119,7 +113,9 @@ async def scan_platform(watch_id, revision, platform, client, *, due_only):
                     "last_checked_at": stamp()})
         return
     if platform == "ebay":
-        record_result()
+        record_result(client=client)
+    else:
+        record_market_result(platform, client)
     with session_scope() as db:
         watch = db.get(Watch, watch_id)
         if not watch or watch.revision != revision or not watch.active:
@@ -261,8 +257,7 @@ async def run():
     restore_monitor(ebay)
     with session_scope() as db:
         for platform, client in markets.items():
-            if state := db.get(ServiceState, f"access:{platform}"):
-                client.blocked_until = state.value
+            restore_access_state(db, platform, client)
     log.info("One results page per selected platform; no item detail requests. Request delay: %.1f-%.1f seconds",
              settings.request_delay_seconds,
              settings.request_delay_seconds + settings.request_delay_jitter_seconds)

@@ -7,7 +7,6 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from email.utils import parsedate_to_datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote, urlencode, urljoin, urlparse
 
@@ -18,6 +17,7 @@ from curl_cffi.requests.exceptions import RequestException as CurlRequestError
 
 from app.config import Settings
 from app.ebay_filters import NATIVE_BOOLEAN_FILTERS, REGION_PARAMS, country_filter
+from app.parser.access import access_retry_at
 from app.parser.errors import BrowserError, EbayAccessError, ParseError
 
 log = logging.getLogger(__name__)
@@ -404,6 +404,8 @@ class EbayClient:
         self.settings = settings
         self.next_request_at = 0.0
         self.blocked_until = 0.0
+        self.access_failures = 0
+        self.preferred_browser = "chromium"
         self.search_referrer = "https://www.ebay.com/"
         self.lock = asyncio.Lock()
         self.on_browser = on_browser
@@ -447,15 +449,8 @@ class EbayClient:
             raise ParseError("eBay item address is not allowed")
 
     def access_error(self, message: str, retry_after: str = "", *, status_code=None):
-        cooldown = self.settings.ebay_block_cooldown_seconds
-        try:
-            delay = float(retry_after)
-        except ValueError:
-            try:
-                delay = parsedate_to_datetime(retry_after).timestamp() - time.time()
-            except (ValueError, TypeError, OverflowError):
-                delay = 0
-        return EbayAccessError(message, time.time() + max(cooldown, min(86400, delay)), status_code=status_code)
+        return EbayAccessError(message, access_retry_at(self.settings.ebay_block_cooldown_seconds,
+                               self.access_failures + 1, retry_after), status_code=status_code)
 
     async def fetch(self, url: str, *, referer: str | None = None) -> str:
         self.validate_url(url)
@@ -468,6 +463,13 @@ class EbayClient:
             candidates = [("chromium" if browser else self.settings.ebay_http_client, self.client)]
             if self.fallback_client is not None:
                 candidates.append(("firefox", self.fallback_client))
+                if self.preferred_browser == "firefox":
+                    candidates.reverse()
+                if self.access_failures:
+                    # After a shared denial, send one probe per recovery window.
+                    # Alternate engines so either native session can recover.
+                    if (self.access_failures - 1) % 2:
+                        candidates.reverse()
             failures = []
             for name, client in candidates:
                 # Only one browser stays open on the VPS. Native profiles survive closing.
@@ -478,13 +480,18 @@ class EbayClient:
                     self.last_browser = name
                     if self.on_browser:
                         self.on_browser(name)
-                    log.info("Checking eBay with %s%s", name, " after Chromium failed" if failures else "")
+                    log.info("Checking eBay with %s%s", name, " after another browser failed" if failures else "")
                 try:
-                    return await self.fetch_with(client, url, referer=referer)
+                    html = await self.fetch_with(client, url, referer=referer)
+                    self.access_failures = 0
+                    self.blocked_until = 0
+                    if browser:
+                        self.preferred_browser = name
+                    return html
                 except (EbayAccessError, BrowserError) as exc:
                     failures.append((name, exc))
                     # An explicit rate limit applies to the service, not a browser profile.
-                    if isinstance(exc, EbayAccessError) and exc.status_code == 429:
+                    if isinstance(exc, EbayAccessError) and (exc.status_code == 429 or self.access_failures):
                         break
                 except ParseError as exc:
                     if not failures:
@@ -494,6 +501,7 @@ class EbayClient:
             access_failures = [exc for _, exc in failures if isinstance(exc, EbayAccessError)]
             message = " ".join(f"{name.title()}: {exc}" for name, exc in failures) if browser else str(failures[0][1])
             if access_failures:
+                self.access_failures += 1
                 self.blocked_until = max(time.time() + self.settings.ebay_block_cooldown_seconds,
                                          *(exc.retry_at for exc in access_failures))
                 if browser and self.active_transport is not None:

@@ -55,11 +55,47 @@ async def test_403_tries_firefox_once_with_same_url_and_filters(fallback):
     assert f.chromium.get.call_args.args == f.firefox.get.call_args.args == (url,)
     f.chromium.close.assert_awaited_once()
     assert f.client.blocked_until == 0 and f.client.last_browser == "firefox"
-    # Every subsequent check starts with Chromium again, with its existing profile.
+    # Keep the working native session for subsequent searches.
     f.chromium.get.return_value = response()
     await f.client.fetch(url)
-    assert f.selected == ["chromium", "firefox", "chromium"]
-    f.firefox.close.assert_awaited_once()
+    assert f.selected == ["chromium", "firefox", "firefox"]
+    f.firefox.close.assert_not_awaited()
+
+
+async def test_working_firefox_can_fall_back_to_chromium(fallback):
+    f = fallback
+    f.client.preferred_browser = "firefox"
+    f.firefox.get.side_effect = None
+    f.firefox.get.return_value = response(403)
+    await f.client.fetch("https://www.ebay.com/sch/i.html")
+    assert f.selected == ["firefox", "chromium"]
+    assert f.client.preferred_browser == "chromium"
+
+
+async def test_repeated_denials_use_one_probe_per_window_and_alternate_engines(fallback):
+    f = fallback
+    for transport in (f.chromium, f.firefox):
+        transport.get.side_effect = None
+        transport.get.return_value = response(403)
+    for expected_delay in (900, 1800, 3600):
+        f.client.blocked_until = 0  # Advance to the next recovery window.
+        with pytest.raises(EbayAccessError) as failure:
+            await f.client.fetch("https://www.ebay.com/sch/i.html")
+        assert expected_delay - 1 <= failure.value.retry_at - time.time() <= expected_delay
+    assert f.selected == ["chromium", "firefox", "chromium", "firefox"]
+    f.client.blocked_until = 0
+    f.chromium.get.return_value = response()
+    await f.client.fetch("https://www.ebay.com/sch/i.html")
+    assert f.client.access_failures == 0
+
+
+async def test_recovery_probe_can_use_other_engine_if_browser_cannot_start(fallback):
+    f = fallback
+    f.client.access_failures = 1
+    f.chromium.get.side_effect = BrowserError("Chromium could not start.")
+    await f.client.fetch("https://www.ebay.com/sch/i.html")
+    assert f.selected == ["chromium", "firefox"]
+    assert f.client.access_failures == 0 and f.client.preferred_browser == "firefox"
 
 
 async def test_both_blocked_set_one_cooldown_and_prevent_more_requests(fallback):

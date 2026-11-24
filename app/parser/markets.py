@@ -3,8 +3,6 @@ import asyncio
 import random
 import re
 import time
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
@@ -12,6 +10,7 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException
 
 from app.parser.ebay import Listing, SearchPage, pick, text
+from app.parser.access import access_retry_at
 from app.parser.errors import ParseError
 from app.platforms import MARKET_CURRENCIES, PLATFORM_NAMES
 
@@ -170,20 +169,15 @@ class MarketClient:
         self.cooldown = settings.ebay_block_cooldown_seconds
         self.next_request = 0.0
         self.blocked_until = 0.0
+        self.access_failures = 0
         self.client = AsyncSession(impersonate="chrome", timeout=20, allow_redirects=False, max_clients=1)
 
     async def close(self):
         await self.client.close()
 
     def _restricted(self, status, retry_after):
-        try:
-            delay = int(retry_after)
-        except ValueError:
-            try:
-                delay = (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
-            except (ValueError, TypeError, OverflowError):
-                delay = 0
-        self.blocked_until = time.time() + max(self.cooldown, min(86400, delay))
+        self.access_failures += 1
+        self.blocked_until = access_retry_at(self.cooldown, self.access_failures, retry_after)
         return MarketAccessError(f"{self.name} restricted access (HTTP {status}).", self.blocked_until)
 
     async def search(self, query, filters):
@@ -214,5 +208,7 @@ class MarketClient:
             page = parser(response.text)
             if expected_empty and page.listings:
                 raise ParseError("Buyee returned listings with HTTP 404.")
+            self.access_failures = 0
+            self.blocked_until = 0
             return page.listings, page.has_next, url
         raise ParseError(f"{self.name} returned too many redirects.")

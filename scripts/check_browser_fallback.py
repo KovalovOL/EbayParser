@@ -56,8 +56,10 @@ async def run_case(root, name, statuses, expected, blocked=False):
                     raise AssertionError("Both browsers blocked must start a shared pause")
         else:
             # Use exactly the same URL in both engines, including native price filters.
-            html = await client.fetch(URL)
-            assert "0 results" in html and client.blocked_until == 0
+            for _ in range(2):
+                html = await client.fetch(URL)
+                assert "0 results" in html and client.blocked_until == 0
+            assert client.preferred_browser == expected[-1]
         assert navigations == expected, navigations
         assert selected == expected, selected
     finally:
@@ -78,8 +80,8 @@ async def run_case(root, name, statuses, expected, blocked=False):
 async def main():
     with tempfile.TemporaryDirectory(prefix="mira-browser-smoke-") as directory:
         root = Path(directory)
-        await run_case(root,"normal",{"chromium":200,"firefox":200},["chromium"])
-        await run_case(root,"recovery",{"chromium":403,"firefox":200},["chromium","firefox"])
+        await run_case(root,"normal",{"chromium":200,"firefox":200},["chromium","chromium"])
+        await run_case(root,"recovery",{"chromium":403,"firefox":200},["chromium","firefox","firefox"])
         await run_case(root,"blocked",{"chromium":403,"firefox":403},["chromium","firefox"],blocked=True)
 
 
