@@ -319,15 +319,18 @@ function criteriaChanged() {
   try {
     const body = watchPayload();
     const equal = (a,b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
-    return body.query !== original.query || !equal(body.platforms,platformsOf(original)) ||
-      !equal(body.market_filters,original.market_filters || {}) ||
+    const originalBudgets = Object.fromEntries(platformsOf(original).filter(key => key in marketCurrencies)
+      .map(key => [key,{min_price:original.market_filters?.[key]?.min_price ?? null,
+        max_price:original.market_filters?.[key]?.max_price ?? null}]));
+    return body.query !== original.query || !equal([...body.platforms].sort(),[...platformsOf(original)].sort()) ||
+      !equal(body.market_filters,originalBudgets) ||
       (body.platforms.includes("ebay") && !equal(body.filters,normalizedFilters(original.filters)));
   }
   catch {return true;}
 }
 function updateChangeNotice() {
   const changed = criteriaChanged(); $("#watch-change-note").hidden = !changed;
-  $("#watch-save").textContent = changed ? "Replace results & save" : "Save search";
+  $("#watch-save").textContent = changed ? "Save changes" : "Save search";
 }
 function openWatch(watch = null) {
   if (!state.user) return showLogin();
@@ -451,9 +454,9 @@ $("#watch-form").addEventListener("submit",e => {e.preventDefault(); busy(e.curr
     if (budget.min_price != null && budget.max_price != null && budget.min_price > budget.max_price)
       throw new Error(`${platformNames[key]}: maximum price must be at least the minimum price.`);
   if (body.filters.min_price != null && body.filters.max_price != null && body.filters.min_price > body.filters.max_price) {$("#max-price").focus(); throw new Error("Maximum price must be at least the minimum price.");}
-  const edited = !!state.editing; const replaced = criteriaChanged();
+  const edited = !!state.editing;
   const watch = await api(edited ? `/api/watches/${state.editing}` : "/api/watches",{method:edited ? "PUT" : "POST",body:JSON.stringify(body)});
-  $("#watch-dialog").close(); toast(replaced ? "Search updated. Creating a new initial snapshot." : edited ? "Search updated." : "Search saved. The first check will save existing listings without alerts."); selectWatch(watch.id);
+  $("#watch-dialog").close(); toast(edited ? "Search updated." : "Search saved. The first check will save existing listings without alerts."); selectWatch(watch.id);
 },"#watch-error");});
 $("#delete-form").addEventListener("submit",e => {e.preventDefault(); busy(e.currentTarget,async () => {
   await api(`/api/watches/${state.deleting}`,{method:"DELETE"}); $("#delete-dialog").close(); state.deleting = null; selectWatch(null); toast("Search and its saved results deleted.");

@@ -15,6 +15,18 @@ def platform_next_check(watch, platform):
         "next_check_at", watch.next_check_at if len(watch.platforms) == 1 else 0)
 
 
+def refresh_watch_state(watch):
+    """Rebuild the summary without treating an edit as a completed source check."""
+    states = [watch.platform_state.get(platform, {}) for platform in watch.platforms]
+    watch.initialized = all(entry.get("initialized", False) for entry in states)
+    watch.search_url = (states[0].get("search_url") if len(states) == 1
+                        else watch.platform_state.get("ebay", {}).get("search_url"))
+    watch.next_check_at = min(entry.get("next_check_at", stamp()) for entry in states)
+    watch.truncated = any(entry.get("truncated", False) for entry in states)
+    watch.error = " · ".join(entry["error"] for entry in states if entry.get("error")) or None
+    watch.failures = max((entry.get("failures", 0) for entry in states), default=0)
+
+
 def save_access_state(db, platform, client):
     if client is None or not hasattr(client, "access_failures"):
         return

@@ -12,7 +12,7 @@ from app.db import init_db, session_scope, stamp
 from app.models import LoginChallenge, Notification, RefreshSession, SeenListing, ServiceState, User, Watch, WatchItem
 from app.listing_identity import listing_identity
 from app.monitoring import (checking, platform_next_check, record_browser, record_market_result,
-                            record_result, restore_access_state, restore_monitor)
+                            record_result, refresh_watch_state, restore_access_state, restore_monitor)
 from app.parser.ebay import EbayAccessError, EbayClient, Listing, ParseError, matches_filters
 from app.parser.errors import BrowserError
 from app.parser.markets import MarketAccessError, MarketClient, matches_market
@@ -38,19 +38,7 @@ def matches_source(listing, filters):
 
 def save_platform_state(watch, platform, result):
     watch.platform_state = {**watch.platform_state, platform: result}
-    if len(watch.platforms) == 1:
-        watch.initialized = result.get("initialized", False)
-        watch.search_url = result.get("search_url")
-        watch.next_check_at = result["next_check_at"]
-    else:
-        states = [watch.platform_state.get(key, {}) for key in watch.platforms]
-        watch.initialized = all(entry.get("initialized") for entry in states)
-        watch.search_url = watch.platform_state.get("ebay", {}).get("search_url")
-        watch.next_check_at = min(entry.get("next_check_at", stamp()) for entry in states)
-    states = [watch.platform_state.get(key, {}) for key in watch.platforms]
-    watch.truncated = any(entry.get("truncated") for entry in states)
-    watch.error = " · ".join(entry["error"] for entry in states if entry.get("error")) or None
-    watch.failures = max((entry.get("failures", 0) for entry in states), default=0)
+    refresh_watch_state(watch)
     watch.last_checked_at = stamp()
 
 

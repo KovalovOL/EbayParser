@@ -17,10 +17,10 @@ from app.models import LoginChallenge, Notification, RefreshSession, SeenListing
 from app.listing_identity import listing_identity
 from app.ebay_filters import COUNTRIES, LOCATION_REGIONS
 from app.messages import display_error
-from app.monitoring import monitoring_status
+from app.monitoring import monitoring_status, refresh_watch_state
 from app.parser.ebay import build_search_url
 from app.parser.markets import build_market_url
-from app.schemas import Filters, LoginStart, LoginVerify, WatchInput, WatchToggle
+from app.schemas import Filters, LoginStart, LoginVerify, MarketBudget, WatchInput, WatchToggle
 from app.security import current_user, digest, new_tokens, rotate_refresh
 from app.telegram import TelegramClient, TelegramError
 
@@ -255,22 +255,44 @@ def create_watch(payload: WatchInput, user: User = Depends(current_user), db: Se
 def edit_watch(watch_id: int, payload: WatchInput, user: User = Depends(current_user), db: Session = Depends(get_db)):
     watch = own_watch(db, user, watch_id)
     market_filters = {key: value.model_dump() for key, value in payload.market_filters.items()}
-    changed = (watch.query != payload.query or watch.platforms != payload.platforms
-               or watch.market_filters != market_filters or (
-                   "ebay" in payload.platforms and Filters(**watch.filters).model_dump() != payload.filters.model_dump()))
+    old_platforms, new_platforms = set(watch.platforms), set(payload.platforms)
+    query_changed = watch.query != payload.query
+    reset = set(new_platforms) if query_changed else new_platforms - old_platforms
+    if not query_changed:
+        for platform in old_platforms & new_platforms:
+            if platform == "ebay":
+                changed = Filters(**watch.filters).model_dump() != payload.filters.model_dump()
+            else:
+                previous_budget = MarketBudget(**watch.market_filters.get(platform, {})).model_dump()
+                changed = previous_budget != market_filters[platform]
+            if changed:
+                reset.add(platform)
+    removed = old_platforms - new_platforms
+    interval_changed = watch.interval_seconds != payload.interval_seconds
+    states = dict(watch.platform_state)
+    if "ebay" in old_platforms and "ebay" not in states:
+        # Retain pre-multiplatform eBay snapshots when a new source is added.
+        states["ebay"] = {"initialized": watch.initialized, "search_url": watch.search_url,
+                          "next_check_at": watch.next_check_at, "truncated": watch.truncated,
+                          "error": watch.error if len(old_platforms) == 1 else None,
+                          "failures": watch.failures if len(old_platforms) == 1 else 0}
+        if watch.last_checked_at is not None:
+            states["ebay"]["last_checked_at"] = watch.last_checked_at
     watch.platforms, watch.market_filters = payload.platforms, market_filters
     watch.name, watch.query = payload.name, payload.query
     watch.filters, watch.interval_seconds = payload.filters.model_dump(), payload.interval_seconds
-    if changed:
-        # Changing criteria creates a new baseline, cancelling outstanding old notifications via FK cascade.
-        db.execute(delete(WatchItem).where(WatchItem.watch_id == watch.id))
-        watch.initialized, watch.tracking_since = False, stamp()
+    now = stamp()
+    if reset or removed:
+        # Cancel results and pending alerts only for removed or changed sources.
+        source = func.coalesce(WatchItem.data["platform"].as_string(), "ebay")
+        db.execute(delete(WatchItem).where(WatchItem.watch_id == watch.id, source.in_(reset | removed)))
         watch.revision += 1
-        watch.platform_state, watch.search_url, watch.truncated = {}, None, False
-        watch.error, watch.failures = None, 0
-    watch.next_check_at = stamp()
-    watch.platform_state = {key: entry | {"next_check_at": watch.next_check_at}
-                            for key, entry in watch.platform_state.items()}
+        if query_changed or (reset & old_platforms) or not (old_platforms & new_platforms):
+            watch.tracking_since = now
+    if reset or removed or interval_changed:
+        watch.platform_state = {key: entry | ({"next_check_at": now} if interval_changed else {})
+                                for key, entry in states.items() if key in new_platforms and key not in reset}
+        refresh_watch_state(watch)
     db.commit()
     return watch_dict(watch)
 
